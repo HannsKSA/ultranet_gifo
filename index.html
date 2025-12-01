@@ -402,6 +402,107 @@
             </div>
         </div>
 
+        <!-- Add Splitter Modal -->
+        <div id="modal-add-splitter" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3>Agregar Splitter a Mufla</h3>
+                <form id="form-add-splitter">
+                    <div class="form-group">
+                        <label class="form-label">Tipo de Splitter</label>
+                        <select class="form-select" id="splitter-type" required>
+                            <option value="1x8">1x8 (1 entrada, 8 salidas)</option>
+                            <option value="1x16">1x16 (1 entrada, 16 salidas)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Conexión de Entrada</label>
+                        <select class="form-select" id="splitter-input-connection" required>
+                            <option value="">Seleccionar cable...</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group" id="splitter-fiber-selection" class="hidden">
+                        <label class="form-label">Hilo de Entrada</label>
+                        <div id="fiber-grid" class="port-grid" style="max-height: 200px; overflow-y: auto;">
+                            <!-- Fiber selection grid -->
+                        </div>
+                    </div>
+
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" id="btn-cancel-splitter">Cancelar</button>
+                        <button type="submit" class="action-btn">Agregar Splitter</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Splitter Ports Modal -->
+        <div id="modal-splitter-ports" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3 id="splitter-ports-title">Puertos del Splitter</h3>
+                <p id="splitter-ports-info" style="font-size: 12px; margin-bottom: 15px; color: #666;">
+                    Hilo de entrada: <strong id="splitter-input-fiber">--</strong>
+                </p>
+
+                <div id="splitter-output-grid" class="port-grid" style="margin-bottom: 15px;">
+                    <!-- Output ports grid -->
+                </div>
+
+                <div class="form-actions">
+                    <button class="btn-secondary" id="btn-close-splitter-ports">Cerrar</button>
+                    <button class="btn-danger" id="btn-delete-splitter">Eliminar Splitter</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Fiber Connection Modal -->
+        <div id="modal-fiber-connection" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3>Conectar Puerto de Splitter</h3>
+                <p id="fiber-conn-info" style="margin-bottom: 15px; font-size: 13px;">
+                    Puerto: <strong id="fiber-conn-port">--</strong>
+                </p>
+
+                <!-- Step 1: Select destination node -->
+                <div id="fiber-conn-step-1">
+                    <div class="form-group">
+                        <label class="form-label">Nodo Destino</label>
+                        <select class="form-select" id="fiber-dest-node">
+                            <option value="">Seleccionar nodo...</option>
+                        </select>
+                    </div>
+                    <button type="button" class="action-btn" id="btn-fiber-next" style="width: 100%;">Siguiente</button>
+                </div>
+
+                <!-- Step 2: Select equipment (if RACK) -->
+                <div id="fiber-conn-step-2" class="hidden">
+                    <h4 style="margin-bottom: 10px; font-size: 14px;">Seleccionar Equipo</h4>
+                    <div id="fiber-dest-equip-list" class="list-group"
+                        style="max-height: 200px; overflow-y: auto; margin-bottom: 15px;">
+                        <!-- Equipment list -->
+                    </div>
+                    <button type="button" class="btn-secondary" id="btn-fiber-back-1"
+                        style="width: 100%;">Atrás</button>
+                </div>
+
+                <!-- Step 3: Select port -->
+                <div id="fiber-conn-step-3" class="hidden">
+                    <h4 style="margin-bottom: 10px; font-size: 14px;">Seleccionar Puerto</h4>
+                    <div id="fiber-dest-port-list" class="port-grid"
+                        style="max-height: 200px; overflow-y: auto; margin-bottom: 15px;">
+                        <!-- Port grid -->
+                    </div>
+                    <button type="button" class="btn-secondary" id="btn-fiber-back-2"
+                        style="width: 100%;">Atrás</button>
+                </div>
+
+                <div class="form-actions" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                    <button id="btn-cancel-fiber-conn" class="btn-secondary">Cancelar</button>
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <!-- Leaflet JS -->

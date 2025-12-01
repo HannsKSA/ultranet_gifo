@@ -395,3 +395,86 @@ body {
     background-color: #f9f9f9;
     color: var(--primary-color);
 }
+
+/* Fiber Colors */
+.fiber-item {
+    display: flex;
+    align-items: center;
+    padding: 8px;
+    margin: 4px;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 2px solid transparent;
+    transition: all 0.2s;
+}
+
+.fiber-item:hover {
+    border-color: var(--primary-color);
+    transform: scale(1.02);
+}
+
+.fiber-item.used {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.fiber-item.selected {
+    border-color: var(--primary-color);
+    background-color: rgba(128, 0, 32, 0.1);
+}
+
+.fiber-color {
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    margin-right: 10px;
+    border: 1px solid #ccc;
+}
+
+.fiber-color.azul {
+    background-color: #0066cc;
+}
+
+.fiber-color.naranja {
+    background-color: #ff6600;
+}
+
+.fiber-color.verde {
+    background-color: #00cc00;
+}
+
+.fiber-color.marron {
+    background-color: #8b4513;
+}
+
+.fiber-color.gris {
+    background-color: #808080;
+}
+
+.fiber-color.blanco {
+    background-color: #ffffff;
+}
+
+.fiber-color.rojo {
+    background-color: #cc0000;
+}
+
+.fiber-color.negro {
+    background-color: #000000;
+}
+
+.fiber-color.amarillo {
+    background-color: #ffcc00;
+}
+
+.fiber-color.violeta {
+    background-color: #9933cc;
+}
+
+.fiber-color.rosa {
+    background-color: #ff66cc;
+}
+
+.fiber-color.aguamarina {
+    background-color: #00cccc;
+}

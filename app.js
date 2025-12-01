@@ -582,20 +582,52 @@ class UIManager {
             btnCancel: document.getElementById('btn-cancel-rack-select')
         };
 
-        // State for Patching Wizard
-        this.wizardState = {
-            sourceEquipId: null,
-            sourcePortId: null,
-            targetEquipId: null
+        // Splitter Management UI
+        this.splitterView = {
+            view: document.getElementById('view-splitter-management'),
+            nodeName: document.getElementById('splitter-node-name'),
+            list: document.getElementById('splitter-list'),
+            btnAdd: document.getElementById('btn-add-splitter'),
+            btnClose: document.getElementById('btn-close-splitters')
         };
 
-        // State for Rack Port Selection
-        this.rackPortState = {
-            nodeId: null,
-            isSource: true, // true if selecting source, false if selecting target
-            selectedEquipId: null,
-            selectedPortId: null
+        this.splitterModals = {
+            addSplitter: document.getElementById('modal-add-splitter'),
+            splitterPorts: document.getElementById('modal-splitter-ports'),
+            fiberConnection: document.getElementById('modal-fiber-connection'),
+            formAddSplitter: document.getElementById('form-add-splitter'),
+            splitterType: document.getElementById('splitter-type'),
+            inputConnection: document.getElementById('splitter-input-connection'),
+            fiberSelection: document.getElementById('splitter-fiber-selection'),
+            fiberGrid: document.getElementById('fiber-grid'),
+            btnCancelSplitter: document.getElementById('btn-cancel-splitter'),
+            // Splitter Ports Modal
+            portsTitle: document.getElementById('splitter-ports-title'),
+            portsInfo: document.getElementById('splitter-ports-info'),
+            inputFiber: document.getElementById('splitter-input-fiber'),
+            outputGrid: document.getElementById('splitter-output-grid'),
+            btnClosePorts: document.getElementById('btn-close-splitter-ports'),
+            btnDeleteSplitter: document.getElementById('btn-delete-splitter'),
+            // Fiber Connection Modal
+            fiberConnInfo: document.getElementById('fiber-conn-info'),
+            fiberConnPort: document.getElementById('fiber-conn-port'),
+            fiberConnStep1: document.getElementById('fiber-conn-step-1'),
+            fiberConnStep2: document.getElementById('fiber-conn-step-2'),
+            fiberConnStep3: document.getElementById('fiber-conn-step-3'),
+            fiberDestNode: document.getElementById('fiber-dest-node'),
+            fiberDestEquipList: document.getElementById('fiber-dest-equip-list'),
+            fiberDestPortList: document.getElementById('fiber-dest-port-list'),
+            btnFiberNext: document.getElementById('btn-fiber-next'),
+            btnFiberBack1: document.getElementById('btn-fiber-back-1'),
+            btnFiberBack2: document.getElementById('btn-fiber-back-2'),
+            btnCancelFiberConn: document.getElementById('btn-cancel-fiber-conn')
         };
+
+        // State for Splitter Management
+        this.currentSplitterNodeId = null;
+        this.currentSplitterId = null;
+        this.selectedFiber = null;
+        this.selectedSplitterPort = null;
 
 
     }
@@ -743,6 +775,26 @@ class UIManager {
         // Rack Port Selection Actions
         this.rackPortSelectUI.btnCancel.addEventListener('click', () => this.closeRackPortSelect());
         this.rackPortSelectUI.btnBack.addEventListener('click', () => this.rackPortSelectGoToStep1());
+
+        // Splitter Management Actions
+        this.splitterView.btnClose.addEventListener('click', () => this.switchView('details'));
+        this.splitterView.btnAdd.addEventListener('click', () => this.openAddSplitterModal());
+
+        this.splitterModals.btnCancelSplitter.addEventListener('click', () => this.splitterModals.addSplitter.classList.add('hidden'));
+        this.splitterModals.formAddSplitter.addEventListener('submit', (e) => {
+            e.preventDefault();
+            this.finalizeAddSplitter();
+        });
+        this.splitterModals.inputConnection.addEventListener('change', () => this.handleSplitterInputConnectionChange());
+
+        this.splitterModals.btnClosePorts.addEventListener('click', () => this.splitterModals.splitterPorts.classList.add('hidden'));
+        this.splitterModals.btnDeleteSplitter.addEventListener('click', () => this.deleteSplitter());
+
+        this.splitterModals.btnCancelFiberConn.addEventListener('click', () => this.splitterModals.fiberConnection.classList.add('hidden'));
+        this.splitterModals.btnFiberNext.addEventListener('click', () => this.fiberConnGoToStep2());
+        this.splitterModals.btnFiberBack1.addEventListener('click', () => this.fiberConnGoToStep1());
+        this.splitterModals.btnFiberBack2.addEventListener('click', () => this.fiberConnGoToStep2());
+        this.splitterModals.fiberDestNode.addEventListener('change', () => this.handleFiberDestNodeChange());
     }
 
     closeModal(modalName) {
@@ -1650,6 +1702,24 @@ class UIManager {
             this.details.btnViewRack.classList.add('hidden');
         }
 
+        // Show/Hide Splitter Button for MUFLA type
+        let btnViewSplitters = document.getElementById('btn-view-splitters');
+        if (!btnViewSplitters) {
+            btnViewSplitters = document.createElement('button');
+            btnViewSplitters.id = 'btn-view-splitters';
+            btnViewSplitters.className = 'action-btn';
+            btnViewSplitters.textContent = '🔌 Ver Splitters';
+            btnViewSplitters.style.marginTop = '10px';
+            btnViewSplitters.addEventListener('click', () => this.showSplitterView());
+            this.details.btnViewRack.parentNode.insertBefore(btnViewSplitters, this.details.btnViewRack.nextSibling);
+        }
+
+        if (node.type === 'MUFLA') {
+            btnViewSplitters.classList.remove('hidden');
+        } else {
+            btnViewSplitters.classList.add('hidden');
+        }
+
         // Hide previous reports
         this.details.reportResults.classList.add('hidden');
         this.mapManager.resetNetworkStyles();
@@ -1673,6 +1743,359 @@ class UIManager {
             this.refreshNodeList();
             this.currentNodeId = null;
         }
+    }
+
+    // --- Splitter Management ---
+    showSplitterView() {
+        if (!this.currentNodeId) return;
+        this.currentSplitterNodeId = this.currentNodeId;
+        const node = this.inventoryManager.getNode(this.currentNodeId);
+
+        this.splitterView.nodeName.textContent = node.name;
+        this.renderSplitterList(node);
+        this.switchView('splitter');
+    }
+
+    renderSplitterList(node) {
+        const container = this.splitterView.list;
+        container.innerHTML = '';
+
+        if (!node.splitters || node.splitters.length === 0) {
+            container.innerHTML = '<p class="empty-state">Sin splitters.</p>';
+            return;
+        }
+
+        node.splitters.forEach(splitter => {
+            const item = document.createElement('div');
+            item.className = 'nav-btn';
+            item.style.display = 'flex';
+            item.style.justifyContent = 'space-between';
+            item.style.alignItems = 'center';
+            item.style.padding = '10px';
+            item.style.marginBottom = '5px';
+            item.style.border = '1px solid #eee';
+            item.style.borderRadius = '4px';
+
+            const info = document.createElement('div');
+            const inputInfo = splitter.inputFiber ?
+                `<span style="color:${splitter.inputFiber.color}">●</span> Hilo ${splitter.inputFiber.fiberNumber}` :
+                'Sin entrada';
+
+            info.innerHTML = `
+                <strong>Splitter ${splitter.type}</strong><br>
+                <span style="font-size:12px; color:#666">Entrada: ${inputInfo}</span>
+            `;
+
+            const btnPorts = document.createElement('button');
+            btnPorts.className = 'btn-secondary';
+            btnPorts.textContent = 'Puertos';
+            btnPorts.style.padding = '4px 8px';
+            btnPorts.style.fontSize = '12px';
+            btnPorts.onclick = (e) => {
+                e.stopPropagation();
+                this.showSplitterPorts(splitter.id);
+            };
+
+            item.appendChild(info);
+            item.appendChild(btnPorts);
+            container.appendChild(item);
+        });
+    }
+
+    openAddSplitterModal() {
+        // Populate input connections
+        const select = this.splitterModals.inputConnection;
+        select.innerHTML = '<option value="">Seleccionar cable...</option>';
+
+        const connections = this.inventoryManager.getConnections().filter(c =>
+            c.from === this.currentSplitterNodeId || c.to === this.currentSplitterNodeId
+        );
+
+        connections.forEach(conn => {
+            const otherNodeId = conn.from === this.currentSplitterNodeId ? conn.to : conn.from;
+            const otherNode = this.inventoryManager.getNode(otherNodeId);
+            const option = document.createElement('option');
+            option.value = conn.id;
+            option.textContent = `${conn.cableType} (${conn.fibers}h) -> ${otherNode.name}`;
+            select.appendChild(option);
+        });
+
+        this.splitterModals.fiberSelection.classList.add('hidden');
+        this.splitterModals.addSplitter.classList.remove('hidden');
+    }
+
+    handleSplitterInputConnectionChange() {
+        const connId = this.splitterModals.inputConnection.value;
+        if (!connId) {
+            this.splitterModals.fiberSelection.classList.add('hidden');
+            return;
+        }
+
+        const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
+        const grid = this.splitterModals.fiberGrid;
+        grid.innerHTML = '';
+
+        if (connection && connection.fiberDetails) {
+            connection.fiberDetails.forEach(fiber => {
+                const item = document.createElement('div');
+                item.className = `fiber-item ${fiber.used ? 'used' : ''}`;
+                item.innerHTML = `
+                    <div class="fiber-color ${fiber.color.toLowerCase()}"></div>
+                    <span>Hilo ${fiber.number}</span>
+                `;
+
+                if (!fiber.used) {
+                    item.onclick = () => {
+                        // Deselect others
+                        grid.querySelectorAll('.fiber-item').forEach(el => el.classList.remove('selected'));
+                        item.classList.add('selected');
+                        this.selectedFiber = fiber;
+                    };
+                }
+
+                grid.appendChild(item);
+            });
+            this.splitterModals.fiberSelection.classList.remove('hidden');
+        }
+    }
+
+    finalizeAddSplitter() {
+        const type = this.splitterModals.splitterType.value;
+        const connId = this.splitterModals.inputConnection.value;
+
+        if (!connId || !this.selectedFiber) {
+            alert('Debes seleccionar un cable y un hilo de entrada.');
+            return;
+        }
+
+        const splitter = {
+            id: Date.now().toString(),
+            type: type,
+            inputFiber: {
+                connectionId: connId,
+                fiberNumber: this.selectedFiber.number,
+                color: this.selectedFiber.color
+            }
+        };
+
+        // Mark fiber as used
+        const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
+        const fiber = connection.fiberDetails.find(f => f.number === this.selectedFiber.number);
+        fiber.used = true;
+        fiber.toTermination = {
+            nodeId: this.currentSplitterNodeId,
+            splitterId: splitter.id,
+            port: 'input'
+        };
+        this.inventoryManager.save();
+
+        this.inventoryManager.addSplitterToNode(this.currentSplitterNodeId, splitter);
+
+        this.splitterModals.addSplitter.classList.add('hidden');
+        this.renderSplitterList(this.inventoryManager.getNode(this.currentSplitterNodeId));
+        this.selectedFiber = null;
+    }
+
+    showSplitterPorts(splitterId) {
+        this.currentSplitterId = splitterId;
+        const splitter = this.inventoryManager.getSplitter(this.currentSplitterNodeId, splitterId);
+
+        this.splitterModals.inputFiber.textContent = `Hilo ${splitter.inputFiber.fiberNumber} (${splitter.inputFiber.color})`;
+        this.splitterModals.inputFiber.style.color = splitter.inputFiber.color;
+
+        const grid = this.splitterModals.outputGrid;
+        grid.innerHTML = '';
+
+        splitter.outputPorts.forEach(port => {
+            const btn = document.createElement('div');
+            btn.className = 'port-item';
+            btn.textContent = port.portNumber;
+
+            if (port.used) {
+                btn.style.backgroundColor = '#2ecc71';
+                btn.style.color = 'white';
+                // Find connected info
+                if (port.connectedTo) {
+                    btn.title = `Conectado via hilo ${port.connectedTo.fiberNumber}`;
+                }
+            } else {
+                btn.style.backgroundColor = '#eee';
+            }
+
+            btn.onclick = () => this.openFiberConnectionModal(port);
+            grid.appendChild(btn);
+        });
+
+        this.splitterModals.splitterPorts.classList.remove('hidden');
+    }
+
+    deleteSplitter() {
+        if (!confirm('¿Estás seguro de eliminar este splitter? Se desconectarán todos los hilos.')) return;
+
+        const splitter = this.inventoryManager.getSplitter(this.currentSplitterNodeId, this.currentSplitterId);
+
+        // Free input fiber
+        const conn = this.inventoryManager.getConnections().find(c => c.id === splitter.inputFiber.connectionId);
+        if (conn) {
+            const fiber = conn.fiberDetails.find(f => f.number === splitter.inputFiber.fiberNumber);
+            if (fiber) {
+                fiber.used = false;
+                fiber.toTermination = null;
+            }
+        }
+
+        // Free output connections (TODO: Implement logic to free downstream fibers)
+
+        this.inventoryManager.deleteSplitter(this.currentSplitterNodeId, this.currentSplitterId);
+        this.inventoryManager.save();
+
+        this.splitterModals.splitterPorts.classList.add('hidden');
+        this.renderSplitterList(this.inventoryManager.getNode(this.currentSplitterNodeId));
+    }
+
+    openFiberConnectionModal(port) {
+        this.selectedSplitterPort = port;
+        this.splitterModals.fiberConnPort.textContent = port.portNumber;
+
+        // Populate destination nodes (only connected via cables)
+        const select = this.splitterModals.fiberDestNode;
+        select.innerHTML = '<option value="">Seleccionar nodo...</option>';
+
+        const connections = this.inventoryManager.getConnections().filter(c =>
+            c.from === this.currentSplitterNodeId || c.to === this.currentSplitterNodeId
+        );
+
+        connections.forEach(conn => {
+            const otherNodeId = conn.from === this.currentSplitterNodeId ? conn.to : conn.from;
+            const otherNode = this.inventoryManager.getNode(otherNodeId);
+            const option = document.createElement('option');
+            option.value = JSON.stringify({ nodeId: otherNodeId, connId: conn.id });
+            option.textContent = `${otherNode.name} (${conn.cableType})`;
+            select.appendChild(option);
+        });
+
+        this.fiberConnGoToStep1();
+        this.splitterModals.fiberConnection.classList.remove('hidden');
+    }
+
+    handleFiberDestNodeChange() {
+        // Logic to select fiber in the outgoing cable will be needed here
+        // For now, we assume auto-selection of next available fiber or manual selection
+        // This part requires more UI to select which fiber of the outgoing cable to use
+    }
+
+    fiberConnGoToStep1() {
+        this.splitterModals.fiberConnStep1.classList.remove('hidden');
+        this.splitterModals.fiberConnStep2.classList.add('hidden');
+        this.splitterModals.fiberConnStep3.classList.add('hidden');
+    }
+
+    fiberConnGoToStep2() {
+        // Logic to show equipment list if target is RACK
+        const val = this.splitterModals.fiberDestNode.value;
+        if (!val) return;
+
+        const { nodeId } = JSON.parse(val);
+        const node = this.inventoryManager.getNode(nodeId);
+
+        if (node.type === 'RACK') {
+            const list = this.splitterModals.fiberDestEquipList;
+            list.innerHTML = '';
+            node.rack.forEach(eq => {
+                const item = document.createElement('div');
+                item.className = 'nav-btn';
+                item.textContent = `${eq.name} (${eq.type})`;
+                item.onclick = () => {
+                    this.selectedDestEquip = eq;
+                    this.fiberConnGoToStep3();
+                };
+                list.appendChild(item);
+            });
+
+            this.splitterModals.fiberConnStep1.classList.add('hidden');
+            this.splitterModals.fiberConnStep2.classList.remove('hidden');
+        } else {
+            // If not rack (e.g. another MUFLA or NAP), logic might differ
+            alert('Por ahora solo se soporta conexión a RACK/ODF.');
+        }
+    }
+
+    fiberConnGoToStep3() {
+        const grid = this.splitterModals.fiberDestPortList;
+        grid.innerHTML = '';
+
+        this.selectedDestEquip.ports.forEach(port => {
+            const btn = document.createElement('div');
+            btn.className = 'port-item';
+            btn.textContent = port.number;
+
+            if (port.status === 'connected') {
+                btn.style.backgroundColor = '#eee';
+                btn.style.cursor = 'not-allowed';
+            } else {
+                btn.onclick = () => this.finalizeFiberConnection(port);
+            }
+            grid.appendChild(btn);
+        });
+
+        this.splitterModals.fiberConnStep2.classList.add('hidden');
+        this.splitterModals.fiberConnStep3.classList.remove('hidden');
+    }
+
+    finalizeFiberConnection(destPort) {
+        // 1. Get selected outgoing connection
+        const { nodeId, connId } = JSON.parse(this.splitterModals.fiberDestNode.value);
+        const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
+
+        // 2. Find first available fiber in outgoing cable (Simple auto-assign for now)
+        // In a full implementation, we should let user select the fiber
+        const availableFiber = connection.fiberDetails.find(f => !f.used);
+
+        if (!availableFiber) {
+            alert('No hay hilos disponibles en el cable seleccionado.');
+            return;
+        }
+
+        // 3. Update Splitter Port
+        const splitter = this.inventoryManager.getSplitter(this.currentSplitterNodeId, this.currentSplitterId);
+        const splitterPort = splitter.outputPorts.find(p => p.portNumber === this.selectedSplitterPort.portNumber);
+        splitterPort.used = true;
+        splitterPort.connectedTo = {
+            connectionId: connId,
+            fiberNumber: availableFiber.number
+        };
+
+        // 4. Update Fiber
+        availableFiber.used = true;
+        availableFiber.fromTermination = {
+            nodeId: this.currentSplitterNodeId,
+            splitterId: this.currentSplitterId,
+            port: splitterPort.portNumber
+        };
+        availableFiber.toTermination = {
+            nodeId: nodeId,
+            equipId: this.selectedDestEquip.id,
+            portId: destPort.id
+        };
+
+        // 5. Update Destination Port
+        const destNode = this.inventoryManager.getNode(nodeId);
+        const equip = destNode.rack.find(e => e.id === this.selectedDestEquip.id);
+        const port = equip.ports.find(p => p.id === destPort.id);
+        port.status = 'connected';
+        port.connectedTo = {
+            equipId: 'SPLITTER', // Placeholder
+            equipName: `Splitter ${splitter.type} (Mufla)`,
+            portId: `split-${splitter.id}-p${splitterPort.portNumber}`
+        };
+
+        this.inventoryManager.save();
+        this.inventoryManager.updateNode(destNode); // Save port changes
+
+        alert(`Conectado exitosamente vía Hilo ${availableFiber.number} (${availableFiber.color})`);
+
+        this.splitterModals.fiberConnection.classList.add('hidden');
+        this.showSplitterPorts(this.currentSplitterId);
     }
 
     loadExistingData() {
