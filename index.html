@@ -196,6 +196,50 @@
                         <button class="btn-secondary" id="btn-close-ports">Volver al Rack</button>
                     </div>
                 </div>
+
+                <!-- Connection Details View -->
+                <div id="view-connection-details" class="sidebar-pane hidden">
+                    <div class="details-header">
+                        <h3 id="connection-detail-title">Detalles de Conexión</h3>
+                    </div>
+                    <div class="details-body">
+                        <p><strong>Desde:</strong> <span id="conn-from-name">--</span></p>
+                        <p><strong>Hasta:</strong> <span id="conn-to-name">--</span></p>
+                        <p><strong>Tipo de Cable:</strong> <span id="conn-cable-type-display">--</span></p>
+                        <p><strong>Cantidad de Hilos:</strong> <span id="conn-fibers-display">--</span></p>
+                        <p><strong>Distancia:</strong> <span id="conn-distance-display">--</span> m</p>
+
+                        <div class="details-actions">
+                            <button class="action-btn" id="btn-edit-connection">✏️ Editar</button>
+                            <button class="btn-danger" id="btn-delete-connection">🗑️ Eliminar</button>
+                        </div>
+                        <div class="details-actions">
+                            <button class="btn-secondary" id="btn-close-connection">Cerrar</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Splitter Management View (for MUFLA nodes) -->
+                <div id="view-splitter-management" class="sidebar-pane hidden">
+                    <div class="details-header">
+                        <h3>Gestión de Splitters</h3>
+                        <p id="splitter-node-name" style="font-size: 12px; opacity: 0.8;">--</p>
+                    </div>
+
+                    <div class="rack-actions" style="margin-bottom: 15px;">
+                        <button class="action-btn" id="btn-add-splitter" style="font-size: 12px; padding: 8px;">+
+                            Agregar Splitter</button>
+                    </div>
+
+                    <div id="splitter-list" class="rack-list">
+                        <!-- Splitter items will be injected here -->
+                        <p class="empty-state">Sin splitters.</p>
+                    </div>
+
+                    <div class="details-actions" style="margin-top: auto;">
+                        <button class="btn-secondary" id="btn-close-splitters">Volver al Nodo</button>
+                    </div>
+                </div>
             </div>
         </aside>
 
@@ -318,6 +362,42 @@
 
                 <div class="form-actions" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
                     <button id="btn-close-patch" class="btn-secondary">Cerrar</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Rack Port Selection Modal (for external connections) -->
+        <div id="modal-rack-port-select" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3 id="rack-port-select-title">Seleccionar Puerto del Rack</h3>
+                <p id="rack-port-select-info" style="margin-bottom: 15px; font-size: 13px; color: #666;">
+                    Selecciona el equipo y puerto del rack que se conectará.
+                </p>
+
+                <!-- Step 1: Select Equipment -->
+                <div id="rack-select-step-1">
+                    <h4 style="margin-bottom: 10px; font-size: 14px;">Seleccionar Equipo</h4>
+                    <div id="rack-select-equip-list" class="list-group"
+                        style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; border: 1px solid #eee;">
+                        <!-- List of equipments -->
+                    </div>
+                </div>
+
+                <!-- Step 2: Select Port -->
+                <div id="rack-select-step-2" class="hidden">
+                    <h4 style="margin-bottom: 10px; font-size: 14px;">Seleccionar Puerto</h4>
+                    <p style="font-size: 12px; margin-bottom: 10px;">Equipo: <strong
+                            id="rack-select-equip-name">--</strong></p>
+                    <div id="rack-select-port-list" class="port-grid"
+                        style="max-height: 200px; overflow-y: auto; margin-bottom: 15px;">
+                        <!-- Grid of ports -->
+                    </div>
+                    <button id="btn-rack-select-back" class="btn-secondary"
+                        style="width: 100%; margin-bottom: 10px;">Atrás</button>
+                </div>
+
+                <div class="form-actions" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                    <button id="btn-cancel-rack-select" class="btn-secondary">Cancelar</button>
                 </div>
             </div>
         </div>
