@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SGIFO - Gestión de Fibra Óptica</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h1>SGIFO</h1>
+                <p>Sistema de Gestión de Infraestructura</p>
+            </div>
+
+            <nav class="sidebar-nav">
+                <button class="nav-btn active" id="btn-map">
+                    <span class="icon">🗺️</span> Mapa General
+                </button>
+                <button class="nav-btn" id="btn-inventory">
+                    <span class="icon">📦</span> Inventario
+                </button>
+                <button class="nav-btn" id="btn-reports">
+                    <span class="icon">⚠️</span> Reportes
+                </button>
+            </nav>
+
+            <div class="sidebar-content">
+                <!-- List View (Default) -->
+                <div id="view-list" class="sidebar-pane active">
+                    <div class="sidebar-actions">
+                        <h3>Acciones Rápidas</h3>
+                        <button class="action-btn" id="btn-add-node">
+                            + Agregar Nodo
+                        </button>
+                    </div>
+                    <div class="node-list" id="node-list-container">
+                        <!-- List of nodes will go here -->
+                        <p class="empty-state">No hay nodos registrados.</p>
+                    </div>
+                </div>
+
+                <!-- Add Node Form -->
+                <div id="view-add-node" class="sidebar-pane hidden">
+                    <h3>Nuevo Nodo</h3>
+                    <form id="add-node-form">
+                        <div class="form-group">
+                            <label class="form-label">Tipo de Equipo</label>
+                            <select class="form-select" id="node-type" required>
+                                <option value="OLT">OLT (Cabecera)</option>
+                                <option value="ODF">ODF (Distribución)</option>
+                                <option value="MUFLA">Mufla (Empalme)</option>
+                                <option value="NAP">NAP (Caja Dispersión)</option>
+                                <option value="POSTE">Poste / Reserva</option>
+                                <option value="RACK">Rack / Gabinete</option>
+                                <option value="ONU">ONU / Cliente</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label">Nombre / Identificador</label>
+                            <input type="text" class="form-input" id="node-name" placeholder="Ej: NAP-A01" required>
+                        </div>
+
+                        <!-- Client Specific Fields (Hidden by default) -->
+                        <div id="client-fields" class="hidden">
+                            <div class="form-group">
+                                <label class="form-label">Dirección</label>
+                                <input type="text" class="form-input" id="client-address"
+                                    placeholder="Dirección del Cliente">
+                            </div>
+                            <div class="form-group">
+                                <label class="form-label">Plan de Servicio</label>
+                                <select class="form-select" id="client-plan">
+                                    <option value="50MB">50 MB</option>
+                                    <option value="100MB">100 MB</option>
+                                    <option value="300MB">300 MB</option>
+                                    <option value="1GB">1 GB</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label class="form-label">Ubicación</label>
+                            <div class="location-preview" id="location-preview">
+                                <small>Haz clic en el mapa para fijar</small>
+                            </div>
+                            <input type="hidden" id="node-lat">
+                            <input type="hidden" id="node-lng">
+                        </div>
+                        <div class="form-actions">
+                            <button type="button" class="btn-secondary" id="btn-cancel-add">Cancelar</button>
+                            <button type="submit" class="action-btn">Guardar</button>
+                        </div>
+                    </form>
+                </div>
+
+                <!-- Node Details View -->
+                <div id="view-node-details" class="sidebar-pane hidden">
+                    <div class="details-header">
+                        <h3 id="detail-name">Nombre Nodo</h3>
+                        <span class="badge" id="detail-type">TIPO</span>
+                    </div>
+                    <div class="details-body">
+                        <p><strong>Coordenadas:</strong> <span id="detail-coords">--</span></p>
+                        <div id="detail-extra-info"></div>
+
+                        <div class="details-actions">
+                            <button class="action-btn" id="btn-start-connection" style="flex:2">🔗 Conectar</button>
+                            <button class="btn-danger" id="btn-report-damage" style="flex:2">⚠️ Reportar Daño</button>
+                        </div>
+                        <div class="details-actions">
+                            <button class="action-btn" id="btn-view-rack" style="background-color: #4a0012;">🖥️ Ver
+                                Rack</button>
+                        </div>
+                        <div class="details-actions">
+                            <button class="btn-secondary" id="btn-close-details">Cerrar</button>
+                            <button class="btn-danger" id="btn-delete-node">Eliminar</button>
+                        </div>
+
+                        <div id="damage-report-results" class="hidden"
+                            style="margin-top: 20px; padding: 10px; background: #fff0f0; border: 1px solid #ffcccc; border-radius: 4px;">
+                            <h4 style="color: #d32f2f; margin-bottom: 10px;">Impacto del Daño</h4>
+                            <p id="impact-summary" style="font-size: 13px;"></p>
+                            <ul id="impact-list" style="font-size: 12px; margin-left: 20px; margin-top: 5px;"></ul>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Rack View -->
+                <div id="view-rack-details" class="sidebar-pane hidden">
+                    <div class="details-header">
+                        <h3>Gestión de Rack</h3>
+                        <p id="rack-node-name" style="font-size: 12px; opacity: 0.8;">--</p>
+                    </div>
+
+                    <div class="rack-actions" style="margin-bottom: 15px;">
+                        <button class="action-btn" id="btn-add-equipment" style="font-size: 12px; padding: 8px;">+
+                            Agregar Equipo</button>
+                    </div>
+
+                    <div id="rack-equipment-list" class="rack-list">
+                        <!-- Equipment items will be injected here -->
+                        <p class="empty-state">Rack vacío.</p>
+                    </div>
+
+                    <div class="details-actions" style="margin-top: auto;">
+                        <button class="btn-secondary" id="btn-close-rack">Volver al Nodo</button>
+                    </div>
+                </div>
+
+                <!-- Port Management View -->
+                <div id="view-port-management" class="sidebar-pane hidden">
+                    <div class="details-header">
+                        <h3 id="port-view-title">Gestión de Puertos</h3>
+                        <p id="port-view-subtitle" style="font-size: 12px; opacity: 0.8;">--</p>
+                    </div>
+
+                    <div class="port-status-legend"
+                        style="display: flex; gap: 10px; margin-bottom: 10px; font-size: 11px;">
+                        <span style="display: flex; align-items: center;">
+                            <div
+                                style="width: 10px; height: 10px; background: #eee; border: 1px solid #ccc; margin-right: 4px;">
+                            </div> Libre
+                        </span>
+                        <span style="display: flex; align-items: center;">
+                            <div style="width: 10px; height: 10px; background: #2ecc71; margin-right: 4px;"></div>
+                            Conectado
+                        </span>
+                        <span style="display: flex; align-items: center;">
+                            <div
+                                style="width: 10px; height: 10px; background: #f1c40f; border: 1px solid #f39c12; margin-right: 4px;">
+                            </div> Seleccionado
+                        </span>
+                    </div>
+
+                    <div id="port-grid" class="port-grid">
+                        <!-- Ports will be injected here -->
+                    </div>
+
+                    <div class="details-actions" style="margin-top: auto;">
+                        <button class="btn-secondary" id="btn-close-ports">Volver al Rack</button>
+                    </div>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar">
+                <div class="status-indicator">
+                    <span class="status-dot online"></span> Sistema Operativo
+                </div>
+                <div class="user-profile">
+                    <button id="btn-locate-me" class="btn-secondary" style="font-size: 12px; padding: 5px 10px;">📍 Mi
+                        Ubicación</button>
+                    <span>Admin</span>
+                </div>
+            </header>
+
+            <div id="map" class="map-container"></div>
+        </main>
+        </main>
+
+        <!-- Modals -->
+        <!-- Connection Modal -->
+        <div id="modal-connection" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3>Propiedades de Conexión</h3>
+                <form id="form-connection">
+                    <div class="form-group">
+                        <label class="form-label">Tipo de Cable</label>
+                        <select class="form-select" id="conn-cable-type">
+                            <option value="ADSS">ADSS (Aéreo)</option>
+                            <option value="DROP">DROP (Acometida)</option>
+                            <option value="SUBTERRANEO">Subterráneo</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Cantidad de Hilos</label>
+                        <select class="form-select" id="conn-fibers">
+                            <option value="1">1 Hilo</option>
+                            <option value="2">2 Hilos</option>
+                            <option value="6">6 Hilos</option>
+                            <option value="12">12 Hilos</option>
+                            <option value="24">24 Hilos</option>
+                            <option value="48">48 Hilos</option>
+                            <option value="96">96 Hilos</option>
+                        </select>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" id="btn-cancel-conn">Cancelar</button>
+                        <button type="submit" class="action-btn">Crear Conexión</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Add Equipment Modal -->
+        <div id="modal-equipment" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3>Agregar Equipo al Rack</h3>
+                <form id="form-equipment">
+                    <div class="form-group">
+                        <label class="form-label">Nombre del Equipo</label>
+                        <input type="text" class="form-input" id="equip-name" placeholder="Ej: OLT Huawei MA5608T"
+                            required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Tipo</label>
+                        <select class="form-select" id="equip-type">
+                            <option value="OLT">OLT</option>
+                            <option value="ODF">ODF</option>
+                            <option value="SWITCH">Switch</option>
+                            <option value="ROUTER">Router</option>
+                            <option value="SERVER">Servidor</option>
+                        </select>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Cantidad de Puertos</label>
+                        <input type="number" class="form-input" id="equip-ports" value="8" min="1" max="128" required>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" id="btn-cancel-equip">Cancelar</button>
+                        <button type="submit" class="action-btn">Agregar</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <!-- Patching Wizard Modal -->
+        <div id="modal-patching" class="modal-overlay hidden">
+            <div class="modal-content">
+                <h3 id="patch-title">Gestionar Puerto</h3>
+
+                <!-- Step 1: Action Selection -->
+                <div id="patch-step-1">
+                    <p id="patch-port-info" style="margin-bottom: 20px; font-weight: 500;">Puerto: --</p>
+                    <div style="display: flex; gap: 10px; flex-direction: column;">
+                        <button id="btn-patch-connect" class="action-btn">Conectar a otro equipo</button>
+                        <button id="btn-patch-disconnect" class="btn-danger hidden">Desconectar</button>
+                    </div>
+                </div>
+
+                <!-- Step 2: Select Target Equipment -->
+                <div id="patch-step-2" class="hidden">
+                    <h4 style="margin-bottom: 10px; font-size: 14px;">Seleccionar Equipo Destino</h4>
+                    <div id="patch-equip-list" class="list-group"
+                        style="max-height: 200px; overflow-y: auto; margin-bottom: 15px; border: 1px solid #eee;">
+                        <!-- List of equipments -->
+                    </div>
+                    <button id="btn-patch-back-1" class="btn-secondary" style="width: 100%">Atrás</button>
+                </div>
+
+                <!-- Step 3: Select Target Port -->
+                <div id="patch-step-3" class="hidden">
+                    <h4 style="margin-bottom: 10px; font-size: 14px;">Seleccionar Puerto Destino</h4>
+                    <div id="patch-port-list" class="port-grid"
+                        style="max-height: 200px; overflow-y: auto; margin-bottom: 15px;">
+                        <!-- Grid of ports -->
+                    </div>
+                    <button id="btn-patch-back-2" class="btn-secondary" style="width: 100%">Atrás</button>
+                </div>
+
+                <div class="form-actions" style="margin-top: 20px; border-top: 1px solid #eee; padding-top: 15px;">
+                    <button id="btn-close-patch" class="btn-secondary">Cerrar</button>
+                </div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <!-- App JS -->
+    <script src="app.js"></script>
+</body>
+
+</html>
