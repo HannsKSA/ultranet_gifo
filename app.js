@@ -75,10 +75,19 @@ class MapManager {
         const hasConnections = this.hasNodeConnections(node.id);
         const warningIcon = hasConnections ? '' : '<div style="position:absolute; top:-8px; right:-8px; font-size:12px;">⚠️</div>';
 
-        let iconHtml = `<div style="position:relative;"><div style="background-color: ${iconColor}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5);"></div>${warningIcon}</div>`;
+        // Check Provider Connectivity (if has connections)
+        let internetIcon = '';
+        if (hasConnections && window.inventoryManagerRef) {
+            const hasInternet = window.inventoryManagerRef.checkProviderConnectivity(node.id);
+            if (!hasInternet) {
+                internetIcon = '<div style="position:absolute; bottom:-5px; right:-5px; font-size:10px;" title="Sin Acceso a Internet">🌐🚫</div>';
+            }
+        }
+
+        let iconHtml = `<div style="position:relative;"><div style="background-color: ${iconColor}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5);"></div>${warningIcon}${internetIcon}</div>`;
 
         if (node.type === 'ONU') {
-            iconHtml = `<div style="position:relative;"><div style="background-color: ${iconColor}; width: 12px; height: 12px; border-radius: 2px; border: 1px solid white;">🏠</div>${warningIcon}</div>`;
+            iconHtml = `<div style="position:relative;"><div style="background-color: ${iconColor}; width: 12px; height: 12px; border-radius: 2px; border: 1px solid white;">🏠</div>${warningIcon}${internetIcon}</div>`;
         }
 
         const marker = L.marker([node.lat, node.lng], {
@@ -248,6 +257,13 @@ class MapManager {
             this.map.removeLayer(this.tempPolyline);
             this.tempPolyline = null;
         }
+    }
+
+    refreshAllMarkers(inventoryManager) {
+        const nodes = inventoryManager.getNodes();
+        nodes.forEach(node => {
+            this.addMarker(node);
+        });
     }
 }
 
@@ -448,6 +464,36 @@ class InventoryManager {
         };
     }
 
+    checkProviderConnectivity(startNodeId) {
+        // BFS to find if connected to a Provider Router
+        const visited = new Set();
+        const queue = [startNodeId];
+        visited.add(startNodeId);
+
+        while (queue.length > 0) {
+            const nodeId = queue.shift();
+            const node = this.getNode(nodeId);
+
+            // Check if this node has a Provider Router
+            if (node.type === 'RACK' && node.rack) {
+                const hasProvider = node.rack.some(eq => eq.type === 'ROUTER' && eq.isProvider);
+                if (hasProvider) return true;
+            }
+
+            // Find neighbors
+            const connections = this.connections.filter(c => c.from === nodeId || c.to === nodeId);
+            connections.forEach(conn => {
+                const neighborId = conn.from === nodeId ? conn.to : conn.from;
+                if (!visited.has(neighborId)) {
+                    visited.add(neighborId);
+                    queue.push(neighborId);
+                }
+            });
+        }
+
+        return false;
+    }
+
     save() {
         localStorage.setItem('sgifo_nodes', JSON.stringify(this.nodes));
         localStorage.setItem('sgifo_connections', JSON.stringify(this.connections));
@@ -479,7 +525,8 @@ class UIManager {
             details: document.getElementById('view-node-details'),
             rack: document.getElementById('view-rack-details'),
             ports: document.getElementById('view-port-management'),
-            connection: document.getElementById('view-connection-details')
+            connection: document.getElementById('view-connection-details'),
+            splitter: document.getElementById('view-splitter-management')
         };
 
         this.connectionDetails = {
@@ -546,10 +593,13 @@ class UIManager {
             equipment: document.getElementById('form-equipment'),
             connCableType: document.getElementById('conn-cable-type'),
             connFibers: document.getElementById('conn-fibers'),
+            connFibers: document.getElementById('conn-fibers'),
             equipName: document.getElementById('equip-name'),
             equipType: document.getElementById('equip-type'),
             equipPorts: document.getElementById('equip-ports'),
-            btnCancelConn: document.getElementById('btn-cancel-conn'),
+            equipIsProvider: document.getElementById('equip-is-provider'),
+            equipProviderGroup: document.getElementById('equip-provider-group'),
+            btnCancelConn: document.getElementById('btn-cancel-connection'),
             btnCancelEquip: document.getElementById('btn-cancel-equip')
         };
 
@@ -696,6 +746,16 @@ class UIManager {
             this.saveNode();
         });
 
+        // Equipment Modal Actions
+        this.modalForms.equipType.addEventListener('change', (e) => {
+            if (e.target.value === 'ROUTER') {
+                this.modalForms.equipProviderGroup.classList.remove('hidden');
+            } else {
+                this.modalForms.equipProviderGroup.classList.add('hidden');
+                this.modalForms.equipIsProvider.checked = false;
+            }
+        });
+
         // Details Actions
         this.details.btnClose.addEventListener('click', () => {
             this.switchView('list');
@@ -802,12 +862,18 @@ class UIManager {
     }
 
     showConnectionModal() {
+        console.log('Showing connection modal');
         this.modals.connection.classList.remove('hidden');
     }
 
     showEquipmentModal() {
         this.modals.equipment.classList.remove('hidden');
         this.modalForms.equipName.focus();
+
+        // Reset and trigger change to set initial state
+        this.modalForms.equipType.value = 'SWITCH';
+        this.modalForms.equipType.dispatchEvent(new Event('change'));
+        this.modalForms.equipIsProvider.checked = false;
     }
 
 
@@ -885,6 +951,10 @@ class UIManager {
     }
 
     completeConnection(targetNodeId) {
+        console.log('completeConnection called with:', targetNodeId);
+        console.log('isConnecting:', this.isConnecting);
+        console.log('connectionSourceId:', this.connectionSourceId);
+
         if (!this.isConnecting || !this.connectionSourceId) return;
 
         if (targetNodeId === this.connectionSourceId) {
@@ -895,14 +965,19 @@ class UIManager {
         const sourceNode = this.inventoryManager.getNode(this.connectionSourceId);
         const targetNode = this.inventoryManager.getNode(targetNodeId);
 
+        console.log('Source Node:', sourceNode);
+        console.log('Target Node:', targetNode);
+
         if (sourceNode && targetNode) {
             this.pendingConnectionTarget = targetNode;
 
             // Check if source or target is a RACK
             if (sourceNode.type === 'RACK' || targetNode.type === 'RACK') {
+                console.log('Rack connection detected');
                 // Need to select ports
                 this.handleRackConnection(sourceNode, targetNode);
             } else {
+                console.log('Normal connection');
                 // Normal connection
                 this.showConnectionModal();
             }
@@ -1059,6 +1134,7 @@ class UIManager {
             toPort
         );
         this.mapManager.addConnection(conn);
+        this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
 
         const distance = this.mapManager.calculateDistance(this.connectionWaypoints);
         // alert(`Conexión creada: ${sourceNode.name} -> ${targetNode.name}\nDistancia: ${distance.toFixed(2)}m\nTipo: ${cableType} (${fibers} hilos)`);
@@ -1154,6 +1230,7 @@ class UIManager {
         const name = this.modalForms.equipName.value;
         const type = this.modalForms.equipType.value;
         const ports = this.modalForms.equipPorts.value;
+        const isProvider = this.modalForms.equipIsProvider.checked;
 
         if (!name) return;
 
@@ -1161,7 +1238,8 @@ class UIManager {
             id: Date.now().toString(),
             name: name,
             type: type,
-            totalPorts: ports
+            totalPorts: ports,
+            isProvider: (type === 'ROUTER' && isProvider)
         };
 
         this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
@@ -1532,25 +1610,15 @@ class UIManager {
     }
 
     deleteConnection() {
-        if (!this.currentConnectionId) return;
-
-        if (!confirm('¿Estás seguro de eliminar esta conexión?')) return;
-
-        const connection = this.inventoryManager.getConnections().find(c => c.id === this.currentConnectionId);
-        if (!connection) return;
-
-        // Remove from map
-        this.mapManager.removeConnection(this.currentConnectionId);
-
-        // Remove from inventory
-        this.inventoryManager.connections = this.inventoryManager.connections.filter(c => c.id !== this.currentConnectionId);
-        this.inventoryManager.save();
-
-        // Refresh markers to show warning icons
-        this.refreshAllMarkers();
-
-        this.switchView('list');
-        this.currentConnectionId = null;
+        if (this.currentConnectionId) {
+            if (confirm('¿Estás seguro de eliminar esta conexión?')) {
+                this.inventoryManager.deleteConnection(this.currentConnectionId);
+                this.mapManager.removeConnection(this.currentConnectionId);
+                this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
+                this.switchView('list');
+                this.currentConnectionId = null;
+            }
+        }
     }
 
     refreshAllMarkers() {
@@ -2136,6 +2204,46 @@ class UIManager {
                 this.mapManager.map.setView([node.lat, node.lng], 16);
             });
             container.appendChild(item);
+        });
+    }
+
+    renderRackList(node) {
+        const container = this.rackView.list;
+        container.innerHTML = '';
+
+        if (!node.rack || node.rack.length === 0) {
+            container.innerHTML = '<p class="empty-state">No hay equipos en este RACK.</p>';
+            return;
+        }
+
+        node.rack.forEach(equip => {
+            const item = document.createElement('div');
+            item.className = 'rack-item';
+
+            const providerBadge = equip.isProvider ? '<span style="background:#2ecc71; color:white; padding:2px 5px; border-radius:3px; font-size:10px; margin-left:5px;">PROVEEDOR</span>' : '';
+
+            item.innerHTML = `
+                <div class="rack-item-header">
+                    <strong>${equip.name}</strong> <span style="font-size: 12px; color: #666;">(${equip.type})</span>${providerBadge}
+                    <span style="font-size: 12px; color: #666; margin-left: auto;">${equip.totalPorts} Puertos</span>
+                </div>
+                <div class="rack-actions">
+                    <button class="action-btn btn-view-ports">Ver Puertos</button>
+                    <button class="btn-secondary btn-edit">Editar</button>
+                    <button class="btn-danger btn-delete">Eliminar</button>
+                </div>
+            `;
+            container.appendChild(item);
+
+            item.querySelector('.btn-view-ports').addEventListener('click', () => {
+                this.showEquipmentPorts(node.id, equip.id);
+            });
+            item.querySelector('.btn-edit').addEventListener('click', () => {
+                this.openEditEquipmentModal(node.id, equip.id);
+            });
+            item.querySelector('.btn-delete').addEventListener('click', () => {
+                this.deleteEquipment(node.id, equip.id);
+            });
         });
     }
 
