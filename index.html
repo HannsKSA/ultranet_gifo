@@ -38,6 +38,10 @@
                 <button class="nav-btn" id="btn-reports">
                     <span class="icon">⚠️</span> Reportes
                 </button>
+                <button class="nav-btn" id="btn-reset-db"
+                    style="margin-top: auto; background-color: #ffebee; color: #c62828;">
+                    <span class="icon">🗑️</span> Reset Datos
+                </button>
             </nav>
 
             <div class="sidebar-content">
@@ -331,7 +335,7 @@
 
                     <div class="form-actions">
                         <button type="button" class="btn-secondary" id="btn-cancel-equip">Cancelar</button>
-                        <button type="submit" class="action-btn">Agregar</button>
+                        <button type="button" class="action-btn" id="btn-save-equipment">Agregar</button>
                     </div>
                 </form>
             </div>
@@ -481,6 +485,12 @@
                         <label class="form-label">Nodo Destino</label>
                         <select class="form-select" id="fiber-dest-node">
                             <option value="">Seleccionar nodo...</option>
+                        </select>
+                    </div>
+                    <div class="form-group hidden" id="fiber-select-group">
+                        <label class="form-label">Hilo de Salida</label>
+                        <select class="form-select" id="fiber-select-fiber">
+                            <option value="">Seleccionar hilo...</option>
                         </select>
                     </div>
                     <button type="button" class="action-btn" id="btn-fiber-next" style="width: 100%;">Siguiente</button>

@@ -23,9 +23,7 @@
 
 ## 🚧 Limitaciones / Trabajo Futuro
 
-1. **Selección de Hilo de Salida**:
-   - Actualmente, al conectar un puerto de splitter a un destino, el sistema asigna automáticamente el primer hilo disponible del cable de salida.
-   - *Mejora*: Permitir al usuario seleccionar manualmente qué hilo del cable de salida usar.
+   - ✅ Implementado: El usuario puede seleccionar manualmente qué hilo del cable de salida usar.
 
 2. **Eliminación en Cascada**:
    - Al eliminar un splitter, se libera el hilo de entrada.

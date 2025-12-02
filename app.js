@@ -64,6 +64,9 @@ class MapManager {
     }
 
     addMarker(node) {
+        if (!this.map) return;
+        if (node.lat == null || node.lng == null) return;
+
         if (this.markers[node.id]) {
             this.map.removeLayer(this.markers[node.id]);
         }
@@ -78,9 +81,13 @@ class MapManager {
         // Check Provider Connectivity (if has connections)
         let internetIcon = '';
         if (hasConnections && window.inventoryManagerRef) {
-            const hasInternet = window.inventoryManagerRef.checkProviderConnectivity(node.id);
-            if (!hasInternet) {
-                internetIcon = '<div style="position:absolute; bottom:-5px; right:-5px; font-size:10px;" title="Sin Acceso a Internet">🌐🚫</div>';
+            try {
+                const hasInternet = window.inventoryManagerRef.checkProviderConnectivity(node.id);
+                if (!hasInternet) {
+                    internetIcon = '<div style="position:absolute; bottom:-5px; right:-5px; font-size:10px;" title="Sin Acceso a Internet">🌐🚫</div>';
+                }
+            } catch (e) {
+                console.warn("Error checking provider connectivity for node", node.id, e);
             }
         }
 
@@ -474,6 +481,8 @@ class InventoryManager {
             const nodeId = queue.shift();
             const node = this.getNode(nodeId);
 
+            if (!node) continue;
+
             // Check if this node has a Provider Router
             if (node.type === 'RACK' && node.rack) {
                 const hasProvider = node.rack.some(eq => eq.type === 'ROUTER' && eq.isProvider);
@@ -666,6 +675,8 @@ class UIManager {
             fiberConnStep3: document.getElementById('fiber-conn-step-3'),
             fiberDestNode: document.getElementById('fiber-dest-node'),
             fiberDestEquipList: document.getElementById('fiber-dest-equip-list'),
+            fiberSelectGroup: document.getElementById('fiber-select-group'),
+            fiberSelectFiber: document.getElementById('fiber-select-fiber'),
             fiberDestPortList: document.getElementById('fiber-dest-port-list'),
             btnFiberNext: document.getElementById('btn-fiber-next'),
             btnFiberBack1: document.getElementById('btn-fiber-back-1'),
@@ -705,6 +716,15 @@ class UIManager {
         document.getElementById('btn-add-node').addEventListener('click', () => this.startAddNodeFlow());
         document.getElementById('btn-cancel-add').addEventListener('click', () => this.cancelAddNode());
         document.getElementById('btn-locate-me').addEventListener('click', () => this.mapManager.locateUser());
+
+        // Reset Database
+        document.getElementById('btn-reset-db').addEventListener('click', () => {
+            if (confirm('⚠️ ¿ESTÁS SEGURO?\n\nEsto borrará TODOS los nodos, conexiones y configuraciones. No se puede deshacer.')) {
+                localStorage.removeItem('sgifo_nodes');
+                localStorage.removeItem('sgifo_connections');
+                location.reload();
+            }
+        });
 
         // Toggle Client Fields
         this.form.type.addEventListener('change', (e) => {
@@ -810,9 +830,32 @@ class UIManager {
             this.finalizeConnection();
         });
 
+        // Equipment Save Action (Click instead of Submit to prevent reload)
+        const btnSaveEquip = document.getElementById('btn-save-equipment');
+        if (btnSaveEquip) {
+            btnSaveEquip.addEventListener('click', (e) => {
+                e.preventDefault(); // Just in case
+                console.log('Save Equipment button clicked');
+
+                // Fallback: if currentRackNodeId is missing but currentNodeId exists (and is the same node), use it
+                if (!this.currentRackNodeId && this.currentNodeId) {
+                    const node = this.inventoryManager.getNode(this.currentNodeId);
+                    if (node && node.type === 'RACK') {
+                        this.currentRackNodeId = this.currentNodeId;
+                    }
+                }
+
+                if (!this.currentRackNodeId) {
+                    console.error('No rack selected');
+                    alert('No se ha seleccionado un rack. Intenta cerrar y volver a abrir el rack.');
+                    return;
+                }
+                this.finalizeAddEquipment();
+            });
+        }
+        // Also prevent any accidental form submission (e.g., Enter key)
         this.modalForms.equipment.addEventListener('submit', (e) => {
             e.preventDefault();
-            this.finalizeAddEquipment();
         });
 
         // Patching Wizard Actions
@@ -1227,26 +1270,58 @@ class UIManager {
     }
 
     finalizeAddEquipment() {
-        const name = this.modalForms.equipName.value;
-        const type = this.modalForms.equipType.value;
-        const ports = this.modalForms.equipPorts.value;
-        const isProvider = this.modalForms.equipIsProvider.checked;
+        console.log('Finalizing Add Equipment...');
+        console.log('Current Rack Node ID:', this.currentRackNodeId);
 
-        if (!name) return;
+        try {
+            const name = this.modalForms.equipName.value;
+            const type = this.modalForms.equipType.value;
+            const ports = this.modalForms.equipPorts.value;
+            const isProvider = this.modalForms.equipIsProvider.checked;
 
-        const equipment = {
-            id: Date.now().toString(),
-            name: name,
-            type: type,
-            totalPorts: ports,
-            isProvider: (type === 'ROUTER' && isProvider)
-        };
+            console.log('Equipment Data:', { name, type, ports, isProvider });
 
-        this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
-        this.renderRackList(this.inventoryManager.getNode(this.currentRackNodeId));
+            if (!name || name.trim() === "") {
+                alert("Por favor ingresa un nombre para el equipo.");
+                return;
+            }
 
-        this.closeModal('equipment');
-        this.modalForms.equipment.reset();
+            if (!this.currentRackNodeId) {
+                console.error('No currentRackNodeId set!');
+                alert("Error: No se ha seleccionado un rack. Por favor cierra y vuelve a abrir la vista del rack.");
+                return;
+            }
+
+            const equipment = {
+                id: Date.now().toString(),
+                name: name,
+                type: type,
+                totalPorts: ports,
+                isProvider: (type === 'ROUTER' && isProvider)
+                // Note: ports array will be initialized by addEquipmentToRack
+            };
+
+            console.log('Adding equipment to rack:', equipment);
+
+            // Add to inventory (this will initialize ports)
+            this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
+
+            console.log('Equipment added successfully');
+
+            // Get updated node and refresh view
+            const updatedNode = this.inventoryManager.getNode(this.currentRackNodeId);
+            console.log('Updated node:', updatedNode);
+
+            this.renderRackList(updatedNode);
+
+            this.closeModal('equipment');
+            this.modalForms.equipment.reset();
+
+            console.log('Equipment addition complete');
+        } catch (e) {
+            console.error("Error adding equipment:", e);
+            alert("Ocurrió un error al guardar el equipo. Revisa la consola para más detalles.");
+        }
     }
 
     editEquipment(equipmentId) {
@@ -2047,9 +2122,34 @@ class UIManager {
     }
 
     handleFiberDestNodeChange() {
-        // Logic to select fiber in the outgoing cable will be needed here
-        // For now, we assume auto-selection of next available fiber or manual selection
-        // This part requires more UI to select which fiber of the outgoing cable to use
+        const val = this.splitterModals.fiberDestNode.value;
+        const group = this.splitterModals.fiberSelectGroup;
+        const select = this.splitterModals.fiberSelectFiber;
+
+        if (!val) {
+            group.classList.add('hidden');
+            return;
+        }
+
+        const { connId } = JSON.parse(val);
+        const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
+
+        if (connection) {
+            select.innerHTML = '<option value="">Seleccionar hilo...</option>';
+            const availableFibers = connection.fiberDetails.filter(f => !f.used);
+
+            if (availableFibers.length === 0) {
+                select.innerHTML = '<option value="">Sin hilos disponibles</option>';
+            } else {
+                availableFibers.forEach(f => {
+                    const option = document.createElement('option');
+                    option.value = f.number;
+                    option.textContent = `Hilo ${f.number} (${f.color})`;
+                    select.appendChild(option);
+                });
+            }
+            group.classList.remove('hidden');
+        }
     }
 
     fiberConnGoToStep1() {
@@ -2115,12 +2215,17 @@ class UIManager {
         const { nodeId, connId } = JSON.parse(this.splitterModals.fiberDestNode.value);
         const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
 
-        // 2. Find first available fiber in outgoing cable (Simple auto-assign for now)
-        // In a full implementation, we should let user select the fiber
-        const availableFiber = connection.fiberDetails.find(f => !f.used);
+        // 2. Get selected fiber
+        const fiberNum = this.splitterModals.fiberSelectFiber.value;
+        if (!fiberNum) {
+            alert('Por favor selecciona un hilo de salida.');
+            return;
+        }
 
-        if (!availableFiber) {
-            alert('No hay hilos disponibles en el cable seleccionado.');
+        const availableFiber = connection.fiberDetails.find(f => f.number === parseInt(fiberNum));
+
+        if (!availableFiber || availableFiber.used) {
+            alert('El hilo seleccionado no está disponible.');
             return;
         }
 
@@ -2167,17 +2272,27 @@ class UIManager {
     }
 
     loadExistingData() {
+        // Refresh list first so it appears even if map rendering fails
+        this.refreshNodeList();
+
         // Load Nodes
         const nodes = this.inventoryManager.getNodes();
         nodes.forEach(node => {
-            this.mapManager.addMarker(node);
+            try {
+                this.mapManager.addMarker(node);
+            } catch (e) {
+                console.error("Error loading node marker:", node, e);
+            }
         });
-        this.refreshNodeList();
 
         // Load Connections
         const connections = this.inventoryManager.getConnections();
         connections.forEach(conn => {
-            this.mapManager.addConnection(conn);
+            try {
+                this.mapManager.addConnection(conn);
+            } catch (e) {
+                console.error("Error loading connection:", conn, e);
+            }
         });
     }
 
@@ -2207,45 +2322,7 @@ class UIManager {
         });
     }
 
-    renderRackList(node) {
-        const container = this.rackView.list;
-        container.innerHTML = '';
 
-        if (!node.rack || node.rack.length === 0) {
-            container.innerHTML = '<p class="empty-state">No hay equipos en este RACK.</p>';
-            return;
-        }
-
-        node.rack.forEach(equip => {
-            const item = document.createElement('div');
-            item.className = 'rack-item';
-
-            const providerBadge = equip.isProvider ? '<span style="background:#2ecc71; color:white; padding:2px 5px; border-radius:3px; font-size:10px; margin-left:5px;">PROVEEDOR</span>' : '';
-
-            item.innerHTML = `
-                <div class="rack-item-header">
-                    <strong>${equip.name}</strong> <span style="font-size: 12px; color: #666;">(${equip.type})</span>${providerBadge}
-                    <span style="font-size: 12px; color: #666; margin-left: auto;">${equip.totalPorts} Puertos</span>
-                </div>
-                <div class="rack-actions">
-                    <button class="action-btn btn-view-ports">Ver Puertos</button>
-                    <button class="btn-secondary btn-edit">Editar</button>
-                    <button class="btn-danger btn-delete">Eliminar</button>
-                </div>
-            `;
-            container.appendChild(item);
-
-            item.querySelector('.btn-view-ports').addEventListener('click', () => {
-                this.showEquipmentPorts(node.id, equip.id);
-            });
-            item.querySelector('.btn-edit').addEventListener('click', () => {
-                this.openEditEquipmentModal(node.id, equip.id);
-            });
-            item.querySelector('.btn-delete').addEventListener('click', () => {
-                this.deleteEquipment(node.id, equip.id);
-            });
-        });
-    }
 
     resetForm() {
         this.form.form.reset();
