@@ -276,18 +276,138 @@ class MapManager {
 
 class InventoryManager {
     constructor() {
-        this.nodes = JSON.parse(localStorage.getItem('sgifo_nodes')) || [];
-        this.connections = JSON.parse(localStorage.getItem('sgifo_connections')) || [];
+        this.nodes = [];
+        this.connections = [];
+    }
+
+    async init() {
+        if (typeof supabaseClient === 'undefined' || supabaseClient === null) {
+            console.error('Supabase SDK not loaded or initialized');
+            alert('Error crítico: No se pudo conectar con la base de datos. Por favor recarga la página.');
+            return;
+        }
+
+        try {
+            console.log('Loading data from Supabase...');
+            const { data: nodes, error: nodeError } = await supabaseClient.from('nodes').select('*');
+            if (nodeError) throw nodeError;
+            this.nodes = nodes || [];
+
+            const { data: connections, error: connError } = await supabaseClient.from('connections').select('*');
+            if (connError) throw connError;
+            this.connections = connections || [];
+
+            // Migration: Remove fiber.used from existing data (deprecated field)
+            let needsUpdate = false;
+            this.connections.forEach(conn => {
+                if (conn.fiberDetails) {
+                    conn.fiberDetails.forEach(fiber => {
+                        if (fiber.hasOwnProperty('used')) {
+                            delete fiber.used;
+                            needsUpdate = true;
+                        }
+                    });
+                }
+            });
+
+            // If we cleaned up any data, save it back
+            if (needsUpdate) {
+                console.log('Migrating fiber data: removing deprecated "used" field...');
+                for (const conn of this.connections) {
+                    if (conn.fiberDetails) {
+                        await supabaseClient.from('connections').update({ fiberDetails: conn.fiberDetails }).eq('id', conn.id);
+                    }
+                }
+                console.log('Migration complete.');
+            }
+
+            // Integrity Check: Remove terminations pointing to non-existent splitters
+            let integrityUpdates = false;
+            this.connections.forEach(conn => {
+                if (conn.fiberDetails) {
+                    conn.fiberDetails.forEach(fiber => {
+                        // Check fromTermination
+                        if (fiber.fromTermination && fiber.fromTermination.splitterId) {
+                            const node = this.nodes.find(n => n.id === fiber.fromTermination.nodeId);
+                            if (node) {
+                                const splitterExists = node.splitters && node.splitters.find(s => s.id === fiber.fromTermination.splitterId);
+                                if (!splitterExists) {
+                                    console.warn(`Cleaning up orphaned fromTermination on connection ${conn.id} fiber ${fiber.number}`);
+                                    fiber.fromTermination = null;
+                                    integrityUpdates = true;
+                                }
+                            }
+                        }
+                        // Check toTermination
+                        if (fiber.toTermination && fiber.toTermination.splitterId) {
+                            const node = this.nodes.find(n => n.id === fiber.toTermination.nodeId);
+                            if (node) {
+                                const splitterExists = node.splitters && node.splitters.find(s => s.id === fiber.toTermination.splitterId);
+                                if (!splitterExists) {
+                                    console.warn(`Cleaning up orphaned toTermination on connection ${conn.id} fiber ${fiber.number}`);
+                                    fiber.toTermination = null;
+                                    integrityUpdates = true;
+                                }
+                            }
+                        }
+                    });
+                }
+            });
+
+            if (integrityUpdates) {
+                console.log('Saving integrity fixes...');
+                for (const conn of this.connections) {
+                    if (conn.fiberDetails) {
+                        await supabaseClient.from('connections').update({ fiberDetails: conn.fiberDetails }).eq('id', conn.id);
+                    }
+                }
+            }
+
+            console.log(`Loaded ${this.nodes.length} nodes and ${this.connections.length} connections from Supabase.`);
+        } catch (e) {
+            console.error('Error loading from Supabase:', e);
+            alert('Error cargando datos de la base de datos. Verifica tu conexión.');
+        }
     }
 
     // Nodes
-    addNode(node) {
+    async addNode(node) {
         // Ensure rack property exists
         if (!node.rack) node.rack = [];
-        // Ensure splitters property exists for MUFLA nodes
-        if (node.type === 'MUFLA' && !node.splitters) node.splitters = [];
+        // Ensure splitters property exists for MUFLA and NAP nodes
+        if ((node.type === 'MUFLA' || node.type === 'NAP') && !node.splitters) node.splitters = [];
+
+        // Optimistic update
         this.nodes.push(node);
-        this.save();
+
+        try {
+            // Prepare node data for Supabase (ensure all fields are present)
+            const nodeData = {
+                id: node.id,
+                type: node.type,
+                name: node.name,
+                lat: node.lat,
+                lng: node.lng,
+                rack: node.rack || [],
+                splitters: node.splitters || [],
+                clientData: node.clientData || null,
+                damageReports: node.damageReports || []
+            };
+
+            const { error } = await supabaseClient.from('nodes').insert(nodeData);
+            if (error) {
+                console.error('Supabase Error:', error);
+                alert(`Error guardando nodo en base de datos: ${error.message}`);
+                // Revert optimistic update
+                this.nodes = this.nodes.filter(n => n.id !== node.id);
+                return null;
+            }
+        } catch (e) {
+            console.error('Exception inserting node:', e);
+            alert('Error al guardar el nodo');
+            this.nodes = this.nodes.filter(n => n.id !== node.id);
+            return null;
+        }
         return node;
     }
 
@@ -295,18 +415,63 @@ class InventoryManager {
         return this.nodes.find(n => n.id === id);
     }
 
-    updateNode(updatedNode) {
+    async updateNode(updatedNode) {
         const index = this.nodes.findIndex(n => n.id === updatedNode.id);
         if (index !== -1) {
+            // Optimistic update
+            const originalNode = this.nodes[index];
             this.nodes[index] = updatedNode;
-            this.save();
+
+            try {
+                // Prepare node data for Supabase
+                const nodeData = {
+                    type: updatedNode.type,
+                    name: updatedNode.name,
+                    lat: updatedNode.lat,
+                    lng: updatedNode.lng,
+                    rack: updatedNode.rack || [],
+                    splitters: updatedNode.splitters || [],
+                    clientData: updatedNode.clientData || null,
+                    damageReports: updatedNode.damageReports || []
+                };
+
+                const { error } = await supabaseClient.from('nodes').update(nodeData).eq('id', updatedNode.id);
+                if (error) {
+                    console.error('Supabase Error:', error);
+                    alert(`Error actualizando nodo en base de datos: ${error.message}`);
+                    // Revert optimistic update (simplified, might need deep copy)
+                    this.nodes[index] = originalNode;
+                }
+            } catch (e) {
+                console.error('Exception updating node:', e);
+                alert('Error al actualizar el nodo');
+                this.nodes[index] = originalNode;
+            }
         }
     }
 
-    deleteNode(id) {
+    async deleteNode(id) {
+        const originalNodes = [...this.nodes];
+        const originalConnections = [...this.connections];
+
         this.nodes = this.nodes.filter(n => n.id !== id);
         this.connections = this.connections.filter(c => c.from !== id && c.to !== id);
-        this.save();
+
+        try {
+            const { error } = await supabaseClient.from('nodes').delete().eq('id', id);
+            if (error) throw error;
+
+            // Also delete connections involving this node
+            const { error: connError } = await supabaseClient.from('connections').delete().or(`from.eq.${id},to.eq.${id}`);
+            if (connError) throw connError;
+
+        } catch (e) {
+            console.error('Supabase Error deleting node:', e);
+            alert('Error eliminando nodo de la base de datos.');
+            // Revert
+            this.nodes = originalNodes;
+            this.connections = originalConnections;
+        }
     }
 
     getNodes() {
@@ -314,32 +479,64 @@ class InventoryManager {
     }
 
     // Connections
-    addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort) {
+    async addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort, sectionType) {
         const newConnection = {
             id: Date.now().toString(),
             from: fromId,
             to: toId,
             path: path, // Array of [lat, lng]
             cableType: cableType,
+            sectionType: sectionType || null, // TRONCAL, SUB_TRONCAL, TRAMO (null for DROP)
             fibers: fibers,
             fromPort: fromPort || null, // { equipId, portId } for RACK nodes
             toPort: toPort || null,      // { equipId, portId } for RACK nodes
             fiberDetails: this.initializeFiberDetails(parseInt(fibers)) // Initialize fiber array
         };
+
+        // Optimistic update
         this.connections.push(newConnection);
-        this.save();
+
+        try {
+            const { error } = await supabaseClient.from('connections').insert(newConnection);
+            if (error) {
+                console.error('Supabase Error:', error);
+                alert(`Error guardando conexión en base de datos: ${error.message}`);
+                this.connections = this.connections.filter(c => c.id !== newConnection.id);
+                return null;
+            }
+        } catch (e) {
+            console.error('Exception inserting connection:', e);
+            alert('Error al guardar la conexión');
+            this.connections = this.connections.filter(c => c.id !== newConnection.id);
+            return null;
+        }
         return newConnection;
     }
 
     initializeFiberDetails(fiberCount) {
-        const colors = ['Azul', 'Naranja', 'Verde', 'Marrón', 'Gris', 'Blanco',
-            'Rojo', 'Negro', 'Amarillo', 'Violeta', 'Rosa', 'Aguamarina'];
+        // TIA-598 Standard Fiber Color Code
+        const colorMap = [
+            { name: 'Azul', hex: '#0066CC' },       // 1
+            { name: 'Naranja', hex: '#FF8800' },    // 2
+            { name: 'Verde', hex: '#00AA00' },      // 3
+            { name: 'Café', hex: '#8B4513' },       // 4
+            { name: 'Gris', hex: '#808080' },       // 5
+            { name: 'Blanco', hex: '#FFFFFF' },     // 6
+            { name: 'Rojo', hex: '#FF0000' },       // 7
+            { name: 'Negro', hex: '#000000' },      // 8
+            { name: 'Amarillo', hex: '#FFFF00' },   // 9
+            { name: 'Violeta', hex: '#8B00FF' },    // 10
+            { name: 'Rosa', hex: '#FF69B4' },       // 11
+            { name: 'Verde Agua', hex: '#00CED1' }  // 12
+        ];
+
         const fibers = [];
         for (let i = 1; i <= fiberCount; i++) {
+            const colorInfo = colorMap[(i - 1) % colorMap.length];
             fibers.push({
                 number: i,
-                color: colors[(i - 1) % colors.length],
-                used: false,
+                color: colorInfo.name,
+                colorHex: colorInfo.hex,
                 fromTermination: null, // { nodeId, splitterId, port }
                 toTermination: null    // { nodeId, equipId, portId }
             });
@@ -347,12 +544,69 @@ class InventoryManager {
         return fibers;
     }
 
+    getColorHex(colorName) {
+        // Helper function to get hex color from name (for backward compatibility)
+        const colorMap = {
+            'Azul': '#0066CC',
+            'Naranja': '#FF8800',
+            'Verde': '#00AA00',
+            'Café': '#8B4513',
+            'Marrón': '#8B4513',  // Alias
+            'Gris': '#808080',
+            'Blanco': '#FFFFFF',
+            'Rojo': '#FF0000',
+            'Negro': '#000000',
+            'Amarillo': '#FFFF00',
+            'Violeta': '#8B00FF',
+            'Rosa': '#FF69B4',
+            'Verde Agua': '#00CED1',
+            'Aguamarina': '#00CED1'  // Alias
+        };
+        return colorMap[colorName] || '#999999'; // Default gray if not found
+    }
+
     getConnections() {
         return this.connections;
     }
 
+    async deleteConnection(id) {
+        const originalConnections = [...this.connections];
+        this.connections = this.connections.filter(c => c.id !== id);
+
+        try {
+            const { error } = await supabaseClient.from('connections').delete().eq('id', id);
+            if (error) throw error;
+        } catch (e) {
+            console.error('Supabase Error deleting connection:', e);
+            alert('Error eliminando conexión de la base de datos.');
+            this.connections = originalConnections;
+        }
+    }
+
+    async updateConnection(updatedConnection) {
+        const index = this.connections.findIndex(c => c.id === updatedConnection.id);
+        if (index !== -1) {
+            const originalConnection = this.connections[index];
+            this.connections[index] = updatedConnection;
+
+            try {
+                // Prepare connection data (exclude id from update)
+                const { id, ...connectionData } = updatedConnection;
+                const { error } = await supabaseClient.from('connections').update(connectionData).eq('id', id);
+                if (error) {
+                    console.error('Supabase Error:', error);
+                    alert(`Error actualizando conexión: ${error.message}`);
+                    this.connections[index] = originalConnection;
+                }
+            } catch (e) {
+                console.error('Exception updating connection:', e);
+                this.connections[index] = originalConnection;
+            }
+        }
+    }
+
     // Rack Management
-    addEquipmentToRack(nodeId, equipment) {
+    async addEquipmentToRack(nodeId, equipment) {
         const node = this.getNode(nodeId);
         if (node) {
             if (!node.rack) node.rack = [];
@@ -369,7 +623,7 @@ class InventoryManager {
             }
 
             node.rack.push(equipment);
-            this.updateNode(node);
+            await this.updateNode(node);
         }
     }
 
@@ -380,9 +634,9 @@ class InventoryManager {
     }
 
     // Splitter Management
-    addSplitterToNode(nodeId, splitter) {
+    async addSplitterToNode(nodeId, splitter) {
         const node = this.getNode(nodeId);
-        if (node && node.type === 'MUFLA') {
+        if (node && (node.type === 'MUFLA' || node.type === 'NAP')) {
             if (!node.splitters) node.splitters = [];
 
             // Initialize splitter ports
@@ -397,7 +651,7 @@ class InventoryManager {
             }
 
             node.splitters.push(splitter);
-            this.updateNode(node);
+            await this.updateNode(node);
             return splitter;
         }
         return null;
@@ -409,15 +663,15 @@ class InventoryManager {
         return node.splitters.find(s => s.id === splitterId);
     }
 
-    deleteSplitter(nodeId, splitterId) {
+    async deleteSplitter(nodeId, splitterId) {
         const node = this.getNode(nodeId);
         if (node && node.splitters) {
             node.splitters = node.splitters.filter(s => s.id !== splitterId);
-            this.updateNode(node);
+            await this.updateNode(node);
         }
     }
 
-    patchPorts(nodeId, equip1Id, port1Id, equip2Id, port2Id) {
+    async patchPorts(nodeId, equip1Id, port1Id, equip2Id, port2Id) {
         const node = this.getNode(nodeId);
         if (!node) return false;
 
@@ -438,7 +692,7 @@ class InventoryManager {
                 port2.status = 'connected';
                 port2.connectedTo = { equipId: equip1Id, portId: port1Id, equipName: equip1.name };
 
-                this.updateNode(node);
+                await this.updateNode(node);
                 return true;
             }
         }
@@ -450,7 +704,18 @@ class InventoryManager {
         const affectedNodes = new Set();
         const affectedConnections = new Set();
 
-        const traverse = (currentId) => {
+        const traverse = (currentId, isStartNode = false) => {
+            const currentNode = this.getNode(currentId);
+
+            // Check if current node has unresolved damage reports (but not for the start node)
+            if (!isStartNode && currentNode && currentNode.damageReports && currentNode.damageReports.length > 0) {
+                const hasUnresolvedReports = currentNode.damageReports.some(r => !r.resolved);
+                if (hasUnresolvedReports) {
+                    // Stop traversing this branch if there are unresolved reports
+                    return;
+                }
+            }
+
             // Find all connections starting from currentId
             const outgoing = this.connections.filter(c => c.from === currentId);
 
@@ -458,12 +723,12 @@ class InventoryManager {
                 affectedConnections.add(conn.id);
                 if (!affectedNodes.has(conn.to)) {
                     affectedNodes.add(conn.to);
-                    traverse(conn.to); // Recursive step
+                    traverse(conn.to, false); // Recursive step
                 }
             });
         };
 
-        traverse(startNodeId);
+        traverse(startNodeId, true);
 
         return {
             nodes: Array.from(affectedNodes).map(id => this.getNode(id)),
@@ -502,11 +767,6 @@ class InventoryManager {
 
         return false;
     }
-
-    save() {
-        localStorage.setItem('sgifo_nodes', JSON.stringify(this.nodes));
-        localStorage.setItem('sgifo_connections', JSON.stringify(this.connections));
-    }
 }
 
 class UIManager {
@@ -543,6 +803,8 @@ class UIManager {
             fromName: document.getElementById('conn-from-name'),
             toName: document.getElementById('conn-to-name'),
             cableType: document.getElementById('conn-cable-type-display'),
+            sectionType: document.getElementById('conn-section-type-display'),
+            sectionTypeRow: document.getElementById('conn-section-type-row'),
             fibers: document.getElementById('conn-fibers-display'),
             distance: document.getElementById('conn-distance-display'),
             btnEdit: document.getElementById('btn-edit-connection'),
@@ -576,12 +838,13 @@ class UIManager {
             btnClose: document.getElementById('btn-close-details'),
             reportResults: document.getElementById('damage-report-results'),
             impactSummary: document.getElementById('impact-summary'),
-            impactList: document.getElementById('impact-list')
+            impactList: document.getElementById('impact-list'),
+            damageReportsSection: document.getElementById('damage-reports-section')
         };
 
         this.rackView = {
             nodeName: document.getElementById('rack-node-name'),
-            list: document.getElementById('rack-equipment-list'),
+            list: document.getElementById('rack-list'),
             btnAdd: document.getElementById('btn-add-equipment'),
             btnClose: document.getElementById('btn-close-rack')
         };
@@ -594,21 +857,34 @@ class UIManager {
         };
         this.modals = {
             connection: document.getElementById('modal-connection'),
-            equipment: document.getElementById('modal-equipment')
+            equipment: document.getElementById('modal-equipment'),
+            fusion: document.getElementById('modal-fusion')
+        };
+
+        this.fusionUI = {
+            cableA: document.getElementById('fusion-cable-a'),
+            cableB: document.getElementById('fusion-cable-b'),
+            listA: document.getElementById('fusion-list-a'),
+            listB: document.getElementById('fusion-list-b'),
+            btnConnect: document.getElementById('btn-fusion-connect'),
+            btnDisconnect: document.getElementById('btn-fusion-disconnect'),
+            btnClose: document.getElementById('btn-close-fusion')
         };
 
         this.modalForms = {
             connection: document.getElementById('form-connection'),
             equipment: document.getElementById('form-equipment'),
             connCableType: document.getElementById('conn-cable-type'),
+            connSectionType: document.getElementById('conn-section-type'),
+            connSectionGroup: document.getElementById('group-section-type'),
             connFibers: document.getElementById('conn-fibers'),
-            connFibers: document.getElementById('conn-fibers'),
+
             equipName: document.getElementById('equip-name'),
             equipType: document.getElementById('equip-type'),
             equipPorts: document.getElementById('equip-ports'),
             equipIsProvider: document.getElementById('equip-is-provider'),
             equipProviderGroup: document.getElementById('equip-provider-group'),
-            btnCancelConn: document.getElementById('btn-cancel-connection'),
+            btnCancelConn: document.getElementById('btn-cancel-conn'),
             btnCancelEquip: document.getElementById('btn-cancel-equip')
         };
 
@@ -662,9 +938,9 @@ class UIManager {
             btnCancelSplitter: document.getElementById('btn-cancel-splitter'),
             // Splitter Ports Modal
             portsTitle: document.getElementById('splitter-ports-title'),
-            portsInfo: document.getElementById('splitter-ports-info'),
             inputFiber: document.getElementById('splitter-input-fiber'),
-            outputGrid: document.getElementById('splitter-output-grid'),
+            splitterTypeDisplay: document.getElementById('splitter-type-display'),
+            outputList: document.getElementById('splitter-output-list'),
             btnClosePorts: document.getElementById('btn-close-splitter-ports'),
             btnDeleteSplitter: document.getElementById('btn-delete-splitter'),
             // Fiber Connection Modal
@@ -690,11 +966,38 @@ class UIManager {
         this.selectedFiber = null;
         this.selectedSplitterPort = null;
 
+        // Wizard State for Port Patching
+        this.wizardState = {
+            sourceEquipId: null,
+            sourcePortId: null,
+            targetEquipId: null
+        };
 
+        // Rack Port Selection State
+        this.rackPortState = {
+            nodeId: null,
+            isSource: false,
+            callback: null,
+            selectedEquipId: null,
+            selectedPortId: null
+        };
+
+        // Connection State
+        this.pendingConnectionTarget = null;
+        this.selectedSourcePort = null;
+        this.selectedTargetPort = null;
+
+        // Fusion State
+        this.fusionState = {
+            nodeId: null,
+            selectedFiberA: null, // { connId, fiberNumber }
+            selectedFiberB: null  // { connId, fiberNumber }
+        };
     }
 
-    init() {
+    async init() {
         this.setupEventListeners();
+        await this.inventoryManager.init();
         this.loadExistingData();
     }
 
@@ -712,19 +1015,34 @@ class UIManager {
     }
 
     setupEventListeners() {
+        // Equipment Save Action (Click instead of Submit to prevent reload)
+        const btnSaveEquip = document.getElementById('btn-save-equipment');
+        if (btnSaveEquip) {
+            btnSaveEquip.addEventListener('click', async (e) => {
+                e.preventDefault(); // Just in case
+                console.log('Save Equipment button clicked');
+
+                // Fallback: if currentRackNodeId is missing but currentNodeId exists (and is the same node), use it
+                if (!this.currentRackNodeId && this.currentNodeId) {
+                    const node = this.inventoryManager.getNode(this.currentNodeId);
+                    if (node && node.type === 'RACK') {
+                        this.currentRackNodeId = this.currentNodeId;
+                    }
+                }
+
+                if (!this.currentRackNodeId) {
+                    console.error('No rack selected');
+                    alert('No se ha seleccionado un rack. Intenta cerrar y volver a abrir el rack.');
+                    return;
+                }
+                await this.finalizeAddEquipment();
+            });
+        }
+
         // Add Node
         document.getElementById('btn-add-node').addEventListener('click', () => this.startAddNodeFlow());
         document.getElementById('btn-cancel-add').addEventListener('click', () => this.cancelAddNode());
         document.getElementById('btn-locate-me').addEventListener('click', () => this.mapManager.locateUser());
-
-        // Reset Database
-        document.getElementById('btn-reset-db').addEventListener('click', () => {
-            if (confirm('⚠️ ¿ESTÁS SEGURO?\n\nEsto borrará TODOS los nodos, conexiones y configuraciones. No se puede deshacer.')) {
-                localStorage.removeItem('sgifo_nodes');
-                localStorage.removeItem('sgifo_connections');
-                location.reload();
-            }
-        });
 
         // Toggle Client Fields
         this.form.type.addEventListener('change', (e) => {
@@ -761,9 +1079,9 @@ class UIManager {
         });
 
         // Form Submit
-        this.form.form.addEventListener('submit', (e) => {
+        this.form.form.addEventListener('submit', async (e) => {
             e.preventDefault();
-            this.saveNode();
+            await this.saveNode();
         });
 
         // Equipment Modal Actions
@@ -822,37 +1140,29 @@ class UIManager {
             }
         });
         // Modal Actions
-        this.modalForms.btnCancelConn.addEventListener('click', () => this.closeModal('connection'));
-        this.modalForms.btnCancelEquip.addEventListener('click', () => this.closeModal('equipment'));
+        if (this.modalForms.btnCancelConn) {
+            this.modalForms.btnCancelConn.addEventListener('click', () => this.closeModal('connection'));
+        }
+        if (this.modalForms.btnCancelEquip) {
+            this.modalForms.btnCancelEquip.addEventListener('click', () => this.closeModal('equipment'));
+        }
 
-        this.modalForms.connection.addEventListener('submit', (e) => {
+        this.modalForms.connection.addEventListener('submit', async (e) => {
             e.preventDefault();
-            this.finalizeConnection();
+            await this.finalizeConnection();
         });
 
-        // Equipment Save Action (Click instead of Submit to prevent reload)
-        const btnSaveEquip = document.getElementById('btn-save-equipment');
-        if (btnSaveEquip) {
-            btnSaveEquip.addEventListener('click', (e) => {
-                e.preventDefault(); // Just in case
-                console.log('Save Equipment button clicked');
+        // Show/Hide Section Type based on Cable Type
+        this.modalForms.connCableType.addEventListener('change', (e) => {
+            const isDrop = e.target.value === 'DROP';
+            if (isDrop) {
+                this.modalForms.connSectionGroup.classList.add('hidden');
+            } else {
+                this.modalForms.connSectionGroup.classList.remove('hidden');
+            }
+        });
 
-                // Fallback: if currentRackNodeId is missing but currentNodeId exists (and is the same node), use it
-                if (!this.currentRackNodeId && this.currentNodeId) {
-                    const node = this.inventoryManager.getNode(this.currentNodeId);
-                    if (node && node.type === 'RACK') {
-                        this.currentRackNodeId = this.currentNodeId;
-                    }
-                }
 
-                if (!this.currentRackNodeId) {
-                    console.error('No rack selected');
-                    alert('No se ha seleccionado un rack. Intenta cerrar y volver a abrir el rack.');
-                    return;
-                }
-                this.finalizeAddEquipment();
-            });
-        }
         // Also prevent any accidental form submission (e.g., Enter key)
         this.modalForms.equipment.addEventListener('submit', (e) => {
             e.preventDefault();
@@ -867,8 +1177,30 @@ class UIManager {
 
         // Connection Details Actions
         this.connectionDetails.btnClose.addEventListener('click', () => this.switchView('list'));
+
+        // Fusion Management Actions
+        const btnManageFusions = document.getElementById('btn-manage-fusions');
+        if (btnManageFusions) {
+            btnManageFusions.addEventListener('click', () => this.openFusionModal());
+        }
+
+        const btnManageFusionsRack = document.getElementById('btn-manage-fusions-rack');
+        if (btnManageFusionsRack) {
+            btnManageFusionsRack.addEventListener('click', () => this.openFusionModal(true));
+        }
+
+        this.fusionUI.btnClose.addEventListener('click', () => {
+            this.modals.fusion.classList.add('hidden');
+            this.fusionState = { nodeId: null, selectedFiberA: null, selectedFiberB: null };
+        });
+
+        this.fusionUI.cableA.addEventListener('change', () => this.handleFusionCableChange('A'));
+        this.fusionUI.cableB.addEventListener('change', () => this.handleFusionCableChange('B'));
+
+        this.fusionUI.btnConnect.addEventListener('click', () => this.fusionConnect());
+        this.fusionUI.btnDisconnect.addEventListener('click', () => this.fusionDisconnect());
         this.connectionDetails.btnEdit.addEventListener('click', () => this.editConnection());
-        this.connectionDetails.btnDelete.addEventListener('click', () => this.deleteConnection());
+        this.connectionDetails.btnDelete.addEventListener('click', async () => await this.deleteConnection());
 
         // Connection click event
         document.addEventListener('connection:clicked', (e) => {
@@ -884,20 +1216,22 @@ class UIManager {
         this.splitterView.btnAdd.addEventListener('click', () => this.openAddSplitterModal());
 
         this.splitterModals.btnCancelSplitter.addEventListener('click', () => this.splitterModals.addSplitter.classList.add('hidden'));
-        this.splitterModals.formAddSplitter.addEventListener('submit', (e) => {
+        this.splitterModals.formAddSplitter.addEventListener('submit', async (e) => {
             e.preventDefault();
-            this.finalizeAddSplitter();
+            await this.finalizeAddSplitter();
         });
         this.splitterModals.inputConnection.addEventListener('change', () => this.handleSplitterInputConnectionChange());
 
         this.splitterModals.btnClosePorts.addEventListener('click', () => this.splitterModals.splitterPorts.classList.add('hidden'));
-        this.splitterModals.btnDeleteSplitter.addEventListener('click', () => this.deleteSplitter());
+        this.splitterModals.btnDeleteSplitter.addEventListener('click', async () => await this.deleteSplitter());
 
         this.splitterModals.btnCancelFiberConn.addEventListener('click', () => this.splitterModals.fiberConnection.classList.add('hidden'));
         this.splitterModals.btnFiberNext.addEventListener('click', () => this.fiberConnGoToStep2());
         this.splitterModals.btnFiberBack1.addEventListener('click', () => this.fiberConnGoToStep1());
         this.splitterModals.btnFiberBack2.addEventListener('click', () => this.fiberConnGoToStep2());
         this.splitterModals.fiberDestNode.addEventListener('change', () => this.handleFiberDestNodeChange());
+
+        console.log('Event listeners set up successfully.');
     }
 
     closeModal(modalName) {
@@ -942,7 +1276,7 @@ class UIManager {
         this.form.preview.style.color = "green";
     }
 
-    saveNode() {
+    async saveNode() {
         if (!this.tempLocation) {
             alert("Por favor selecciona una ubicación en el mapa.");
             return;
@@ -965,11 +1299,14 @@ class UIManager {
             };
         }
 
-        this.inventoryManager.addNode(newNode);
-        this.mapManager.addMarker(newNode);
+        const addedNode = await this.inventoryManager.addNode(newNode);
 
-        this.isAddingNode = false;
-        this.switchView('list');
+        if (addedNode) {
+            this.mapManager.addMarker(addedNode);
+            this.isAddingNode = false;
+            this.switchView('list');
+            this.refreshNodeList();
+        }
         this.refreshNodeList();
     }
 
@@ -1151,7 +1488,7 @@ class UIManager {
         this.rackPortSelectUI.modal.classList.add('hidden');
     }
 
-    finalizeConnection() {
+    async finalizeConnection() {
         if (!this.pendingConnectionTarget || !this.connectionSourceId) return;
 
         const sourceNode = this.inventoryManager.getNode(this.connectionSourceId);
@@ -1159,6 +1496,7 @@ class UIManager {
 
         const cableType = this.modalForms.connCableType.value;
         const fibers = this.modalForms.connFibers.value;
+        const sectionType = cableType === 'DROP' ? null : this.modalForms.connSectionType.value;
 
         // Add target as final point
         this.connectionWaypoints.push([targetNode.lat, targetNode.lng]);
@@ -1167,26 +1505,35 @@ class UIManager {
         const fromPort = sourceNode.type === 'RACK' ? this.selectedSourcePort : null;
         const toPort = targetNode.type === 'RACK' ? this.selectedTargetPort : null;
 
-        const conn = this.inventoryManager.addConnection(
-            sourceNode.id,
-            targetNode.id,
-            this.connectionWaypoints,
-            cableType,
-            fibers,
-            fromPort,
-            toPort
-        );
-        this.mapManager.addConnection(conn);
-        this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
+        try {
+            const conn = await this.inventoryManager.addConnection(
+                sourceNode.id,
+                targetNode.id,
+                this.connectionWaypoints,
+                cableType,
+                fibers,
+                fromPort,
+                toPort,
+                sectionType
+            );
 
-        const distance = this.mapManager.calculateDistance(this.connectionWaypoints);
-        // alert(`Conexión creada: ${sourceNode.name} -> ${targetNode.name}\nDistancia: ${distance.toFixed(2)}m\nTipo: ${cableType} (${fibers} hilos)`);
+            if (conn) {
+                this.mapManager.addConnection(conn);
+                this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
 
-        this.closeModal('connection');
-        this.cancelConnectionFlow();
-        this.pendingConnectionTarget = null;
-        this.selectedSourcePort = null;
-        this.selectedTargetPort = null;
+                const distance = this.mapManager.calculateDistance(this.connectionWaypoints);
+                // alert(`Conexión creada: ${sourceNode.name} -> ${targetNode.name}\nDistancia: ${distance.toFixed(2)}m\nTipo: ${cableType} (${fibers} hilos)`);
+
+                this.closeModal('connection');
+                this.cancelConnectionFlow();
+                this.pendingConnectionTarget = null;
+                this.selectedSourcePort = null;
+                this.selectedTargetPort = null;
+            }
+        } catch (e) {
+            console.error("Error creating connection:", e);
+            alert("Error al crear la conexión.");
+        }
     }
 
 
@@ -1269,7 +1616,7 @@ class UIManager {
         this.showEquipmentModal();
     }
 
-    finalizeAddEquipment() {
+    async finalizeAddEquipment() {
         console.log('Finalizing Add Equipment...');
         console.log('Current Rack Node ID:', this.currentRackNodeId);
 
@@ -1304,7 +1651,7 @@ class UIManager {
             console.log('Adding equipment to rack:', equipment);
 
             // Add to inventory (this will initialize ports)
-            this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
+            await this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
 
             console.log('Equipment added successfully');
 
@@ -1550,7 +1897,7 @@ class UIManager {
                 btn.title = 'Ocupado';
             } else {
                 btn.style.backgroundColor = '#eee';
-                btn.addEventListener('click', () => this.executeConnection(port.id));
+                btn.addEventListener('click', async () => await this.executeConnection(port.id));
             }
             grid.appendChild(btn);
         });
@@ -1559,8 +1906,8 @@ class UIManager {
         this.patchingUI.step3.classList.remove('hidden');
     }
 
-    executeConnection(targetPortId) {
-        const success = this.inventoryManager.patchPorts(
+    async executeConnection(targetPortId) {
+        const success = await this.inventoryManager.patchPorts(
             this.currentRackNodeId,
             this.wizardState.sourceEquipId,
             this.wizardState.sourcePortId,
@@ -1576,7 +1923,7 @@ class UIManager {
         }
     }
 
-    disconnectPort() {
+    async disconnectPort() {
         // Simplified disconnect logic (needs backend support in InventoryManager, adding it here)
         // For now, just alert as placeholder or implement basic disconnect
         // Since InventoryManager.patchPorts handles connection, we need a disconnect method.
@@ -1606,7 +1953,7 @@ class UIManager {
                 }
             }
 
-            this.inventoryManager.updateNode(node);
+            await this.inventoryManager.updateNode(node);
             alert("Puerto desconectado.");
             this.closePatchingModal();
         }
@@ -1625,6 +1972,14 @@ class UIManager {
         this.connectionDetails.fromName.textContent = fromNode ? fromNode.name : '--';
         this.connectionDetails.toName.textContent = toNode ? toNode.name : '--';
         this.connectionDetails.cableType.textContent = connection.cableType || '--';
+
+        if (connection.cableType === 'DROP') {
+            this.connectionDetails.sectionTypeRow.classList.add('hidden');
+        } else {
+            this.connectionDetails.sectionTypeRow.classList.remove('hidden');
+            this.connectionDetails.sectionType.textContent = connection.sectionType || 'No definido';
+        }
+
         this.connectionDetails.fibers.textContent = connection.fibers || '--';
 
         const distance = this.mapManager.calculateDistance(connection.path);
@@ -1656,7 +2011,7 @@ class UIManager {
         };
     }
 
-    finalizeEditConnection() {
+    async finalizeEditConnection() {
         if (!this.editingConnectionId) return;
 
         const connections = this.inventoryManager.getConnections();
@@ -1666,7 +2021,7 @@ class UIManager {
             connection.cableType = this.modalForms.connCableType.value;
             connection.fibers = this.modalForms.connFibers.value;
 
-            this.inventoryManager.save();
+            await this.inventoryManager.updateConnection(connection);
 
             // Refresh map
             this.mapManager.removeConnection(connection.id);
@@ -1684,10 +2039,10 @@ class UIManager {
         }
     }
 
-    deleteConnection() {
+    async deleteConnection() {
         if (this.currentConnectionId) {
             if (confirm('¿Estás seguro de eliminar esta conexión?')) {
-                this.inventoryManager.deleteConnection(this.currentConnectionId);
+                await this.inventoryManager.deleteConnection(this.currentConnectionId);
                 this.mapManager.removeConnection(this.currentConnectionId);
                 this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
                 this.switchView('list');
@@ -1787,12 +2142,45 @@ class UIManager {
     }
 
     // --- Damage Report Logic ---
-    reportDamage() {
+    async reportDamage() {
         if (!this.currentNodeId) return;
 
+        const node = this.inventoryManager.getNode(this.currentNodeId);
+        if (!node) return;
+
+        // Prompt for damage description
+        const description = prompt('Describe el daño o problema encontrado:');
+        if (!description || description.trim() === '') {
+            alert('Debe ingresar una descripción del daño.');
+            return;
+        }
+
+        // Create damage report
+        const damageReport = {
+            id: Date.now().toString(),
+            description: description.trim(),
+            resolved: false,
+            reportedAt: new Date().toISOString()
+        };
+
+        // Initialize damageReports array if it doesn't exist
+        if (!node.damageReports) {
+            node.damageReports = [];
+        }
+
+        // Add the report
+        node.damageReports.push(damageReport);
+
+        // Update node in database
+        await this.inventoryManager.updateNode(node);
+
+        // Calculate downstream impact
         const impact = this.inventoryManager.getDownstreamImpact(this.currentNodeId);
 
-        // Highlight on map
+        // Refresh node details to show the new report first
+        this.showNodeDetails(this.currentNodeId);
+
+        // Then highlight on map
         this.mapManager.resetNetworkStyles();
         this.mapManager.highlightAffectedNetwork(
             impact.nodes.map(n => n.id),
@@ -1801,7 +2189,7 @@ class UIManager {
 
         // Show results in sidebar
         this.details.reportResults.classList.remove('hidden');
-        this.details.impactSummary.textContent = `Se encontraron ${impact.nodes.length} equipos afectados aguas abajo.`;
+        this.details.impactSummary.textContent = `Reporte creado. ${impact.nodes.length} equipos afectados aguas abajo.`;
 
         this.details.impactList.innerHTML = '';
         if (impact.nodes.length > 0) {
@@ -1814,6 +2202,102 @@ class UIManager {
             const li = document.createElement('li');
             li.textContent = "No hay equipos dependientes afectados.";
             this.details.impactList.appendChild(li);
+        }
+
+        alert(`Reporte de daño creado exitosamente.\nID: ${damageReport.id}\nEquipos afectados: ${impact.nodes.length}`);
+    }
+
+    async resolveReport(nodeId, reportId) {
+        const node = this.inventoryManager.getNode(nodeId);
+        if (!node || !node.damageReports) return;
+
+        const report = node.damageReports.find(r => r.id === reportId);
+        if (!report) return;
+
+        // Mark as resolved
+        report.resolved = true;
+        report.resolvedAt = new Date().toISOString();
+
+        // Calculate resolution time
+        const reportedTime = new Date(report.reportedAt);
+        const resolvedTime = new Date(report.resolvedAt);
+        const diffMs = resolvedTime - reportedTime;
+
+        const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+        const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+
+        report.resolutionTime = `${days}d ${hours}h ${minutes}m`;
+
+        // Update node in database
+        await this.inventoryManager.updateNode(node);
+
+        // Refresh the view
+        this.showNodeDetails(nodeId);
+
+        alert(`Reporte marcado como resuelto.\nTiempo de resolución: ${report.resolutionTime}`);
+    }
+
+    showAllReports(nodeId) {
+        const node = this.inventoryManager.getNode(nodeId);
+        if (!node || !node.damageReports) return;
+
+        let html = '<div style="max-height: 400px; overflow-y: auto;">';
+        html += '<h3 style="margin-top: 0;">Historial de Reportes</h3>';
+
+        // Sort by date, newest first
+        const sortedReports = [...node.damageReports].sort((a, b) =>
+            new Date(b.reportedAt) - new Date(a.reportedAt)
+        );
+
+        sortedReports.forEach(report => {
+            const reportDate = new Date(report.reportedAt).toLocaleString('es-CO');
+            const statusColor = report.resolved ? '#28a745' : '#dc3545';
+            const statusText = report.resolved ? '✓ Resuelto' : '✗ Pendiente';
+
+            html += `
+                <div style="margin-bottom: 15px; padding: 10px; background: white; border-left: 3px solid ${statusColor}; border-radius: 3px; box-shadow: 0 1px 3px rgba(0,0,0,0.1);">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <strong style="font-size: 12px; color: #666;">ID: ${report.id}</strong>
+                        <span style="font-size: 12px; color: ${statusColor}; font-weight: bold;">${statusText}</span>
+                    </div>
+                    <p style="margin: 5px 0; font-size: 14px; color: #333;">${report.description}</p>
+                    <small style="color: #666; font-size: 11px;">Reportado: ${reportDate}</small>
+            `;
+
+            if (report.resolved && report.resolvedAt) {
+                const resolvedDate = new Date(report.resolvedAt).toLocaleString('es-CO');
+                html += `<br><small style="color: #28a745; font-size: 11px;">Resuelto: ${resolvedDate}</small>`;
+                if (report.resolutionTime) {
+                    html += `<br><small style="color: #666; font-size: 11px;">Tiempo de resolución: ${report.resolutionTime}</small>`;
+                }
+            } else {
+                html += `<br><button class="btn-secondary" style="margin-top: 8px; font-size: 11px; padding: 4px 8px;" onclick="window.uiManager.resolveReport('${nodeId}', '${report.id}'); window.uiManager.closeReportsModal();">Marcar como Resuelto</button>`;
+            }
+
+            html += '</div>';
+        });
+
+        html += '</div>';
+        html += '<button class="action-btn" style="width: 100%; margin-top: 10px;" onclick="window.uiManager.closeReportsModal()">Cerrar</button>';
+
+        // Create modal
+        const modal = document.createElement('div');
+        modal.id = 'modal-all-reports';
+        modal.className = 'modal-overlay';
+        modal.innerHTML = `<div class="modal-content" style="max-width: 600px;">${html}</div>`;
+        document.body.appendChild(modal);
+        modal.classList.remove('hidden');
+    }
+
+    closeReportsModal() {
+        const modal = document.getElementById('modal-all-reports');
+        if (modal) {
+            modal.remove();
+        }
+        // Refresh current node details
+        if (this.currentNodeId) {
+            this.showNodeDetails(this.currentNodeId);
         }
     }
 
@@ -1838,6 +2322,72 @@ class UIManager {
             this.details.extraInfo.innerHTML = '';
         }
 
+        // Show damage reports
+        let damageReportsHtml = '';
+        if (node.damageReports && node.damageReports.length > 0) {
+            // Separate pending and resolved reports
+            const pendingReports = node.damageReports.filter(r => !r.resolved);
+            const resolvedReports = node.damageReports.filter(r => r.resolved);
+
+            // Combine: show pending first, then resolved (max 3 total)
+            const reportsToShow = [
+                ...pendingReports.slice(0, 3),
+                ...resolvedReports.slice(0, Math.max(0, 3 - pendingReports.length))
+            ];
+
+            if (reportsToShow.length > 0) {
+                const hasPending = pendingReports.length > 0;
+                const bgColor = hasPending ? '#fff3cd' : '#d4edda';
+                const borderColor = hasPending ? '#ffc107' : '#28a745';
+                const titleColor = hasPending ? '#856404' : '#155724';
+                const title = hasPending ? '⚠️ Reportes de Daños' : '✓ Reportes Resueltos';
+
+                damageReportsHtml = `<div style="margin-top: 15px; padding: 10px; background: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 4px;">`;
+                damageReportsHtml += `<h4 style="margin: 0 0 10px 0; color: ${titleColor};">${title}</h4>`;
+
+                reportsToShow.forEach((report) => {
+                    const reportDate = new Date(report.reportedAt).toLocaleString('es-CO');
+                    const statusColor = report.resolved ? '#28a745' : '#dc3545';
+                    const statusText = report.resolved ? '✓ Resuelto' : '✗ Pendiente';
+
+                    damageReportsHtml += `
+                        <div style="margin-bottom: 10px; padding: 8px; background: white; border-left: 3px solid ${statusColor}; border-radius: 3px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                                <strong style="font-size: 11px; color: #666;">ID: ${report.id}</strong>
+                                <span style="font-size: 11px; color: ${statusColor}; font-weight: bold;">${statusText}</span>
+                            </div>
+                            <p style="margin: 5px 0; font-size: 13px;">${report.description}</p>
+                            <small style="color: #666; font-size: 11px;">Reportado: ${reportDate}</small>
+                    `;
+
+                    if (report.resolved && report.resolvedAt) {
+                        const resolvedDate = new Date(report.resolvedAt).toLocaleString('es-CO');
+                        damageReportsHtml += `<br><small style="color: #28a745; font-size: 11px;">Resuelto: ${resolvedDate}</small>`;
+                        if (report.resolutionTime) {
+                            damageReportsHtml += `<br><small style="color: #666; font-size: 11px;">Tiempo: ${report.resolutionTime}</small>`;
+                        }
+                    } else {
+                        damageReportsHtml += `<br><button class="btn-secondary" style="margin-top: 5px; font-size: 11px; padding: 4px 8px;" onclick="window.uiManager.resolveReport('${nodeId}', '${report.id}')">Marcar como Resuelto</button>`;
+                    }
+
+                    damageReportsHtml += '</div>';
+                });
+
+                // Show "View All" button if there are more than 3 reports total
+                if (node.damageReports.length > 3) {
+                    damageReportsHtml += `
+                        <button class="btn-secondary" style="width: 100%; margin-top: 5px; font-size: 12px;" onclick="window.uiManager.showAllReports('${nodeId}')">
+                            Ver Historial Completo (${node.damageReports.length} reportes)
+                        </button>
+                    `;
+                }
+
+                damageReportsHtml += '</div>';
+            }
+        }
+
+        this.details.damageReportsSection.innerHTML = damageReportsHtml;
+
         // Show/Hide Rack Button only for RACK type
         if (node.type === 'RACK') {
             this.details.btnViewRack.classList.remove('hidden');
@@ -1857,7 +2407,7 @@ class UIManager {
             this.details.btnViewRack.parentNode.insertBefore(btnViewSplitters, this.details.btnViewRack.nextSibling);
         }
 
-        if (node.type === 'MUFLA') {
+        if (node.type === 'MUFLA' || node.type === 'NAP') {
             btnViewSplitters.classList.remove('hidden');
         } else {
             btnViewSplitters.classList.add('hidden');
@@ -1870,7 +2420,7 @@ class UIManager {
         this.switchView('details');
     }
 
-    deleteCurrentNode() {
+    async deleteCurrentNode() {
         if (this.currentNodeId) {
             // Remove connections first visually
             const connections = this.inventoryManager.getConnections();
@@ -1880,7 +2430,7 @@ class UIManager {
                 }
             });
 
-            this.inventoryManager.deleteNode(this.currentNodeId);
+            await this.inventoryManager.deleteNode(this.currentNodeId);
             this.mapManager.removeMarker(this.currentNodeId);
             this.switchView('list');
             this.refreshNodeList();
@@ -1929,6 +2479,10 @@ class UIManager {
                 <span style="font-size:12px; color:#666">Entrada: ${inputInfo}</span>
             `;
 
+            const buttonContainer = document.createElement('div');
+            buttonContainer.style.display = 'flex';
+            buttonContainer.style.gap = '5px';
+
             const btnPorts = document.createElement('button');
             btnPorts.className = 'btn-secondary';
             btnPorts.textContent = 'Puertos';
@@ -1939,8 +2493,40 @@ class UIManager {
                 this.showSplitterPorts(splitter.id);
             };
 
+            const btnDelete = document.createElement('button');
+            btnDelete.className = 'btn-danger';
+            btnDelete.textContent = '🗑️';
+            btnDelete.style.padding = '4px 8px';
+            btnDelete.style.fontSize = '12px';
+            btnDelete.title = 'Eliminar Splitter';
+            btnDelete.onclick = async (e) => {
+                e.stopPropagation();
+                if (!confirm('¿Estás seguro de eliminar este splitter? Se desconectarán todos los hilos.')) return;
+
+                // Free input fiber - clear correct termination
+                const conn = this.inventoryManager.getConnections().find(c => c.id === splitter.inputFiber.connectionId);
+                if (conn) {
+                    const fiber = conn.fiberDetails.find(f => f.number === splitter.inputFiber.fiberNumber);
+                    if (fiber) {
+                        const isFromNode = conn.from === this.currentSplitterNodeId;
+                        if (isFromNode) {
+                            fiber.fromTermination = null;
+                        } else {
+                            fiber.toTermination = null;
+                        }
+                    }
+                    await this.inventoryManager.updateConnection(conn);
+                }
+
+                await this.inventoryManager.deleteSplitter(this.currentSplitterNodeId, splitter.id);
+                this.renderSplitterList(this.inventoryManager.getNode(this.currentSplitterNodeId));
+            };
+
+            buttonContainer.appendChild(btnPorts);
+            buttonContainer.appendChild(btnDelete);
+
             item.appendChild(info);
-            item.appendChild(btnPorts);
+            item.appendChild(buttonContainer);
             container.appendChild(item);
         });
     }
@@ -1979,15 +2565,37 @@ class UIManager {
         grid.innerHTML = '';
 
         if (connection && connection.fiberDetails) {
+            // Determine direction relative to current node
+            const isFromNode = connection.from === this.currentSplitterNodeId;
+
             connection.fiberDetails.forEach(fiber => {
                 const item = document.createElement('div');
-                item.className = `fiber-item ${fiber.used ? 'used' : ''}`;
+
+                // Check termination at current node
+                const currentTermination = isFromNode ? fiber.fromTermination : fiber.toTermination;
+
+                // Can use as input if:
+                // 1. Termination is null (completely free)
+                // 2. OR Termination exists but is generic (nodeId matches current node, but no splitter/equip/port assigned yet)
+                //    This happens when we connected a splitter output from the other end to this node "directly"
+                let canUseAsInput = !currentTermination;
+
+                if (currentTermination) {
+                    // Check if it's a generic termination at this node (ready to be used as input)
+                    if (currentTermination.nodeId === this.currentSplitterNodeId &&
+                        !currentTermination.splitterId &&
+                        !currentTermination.equipId) {
+                        canUseAsInput = true;
+                    }
+                }
+
+                item.className = `fiber-item ${!canUseAsInput ? 'used' : ''}`;
                 item.innerHTML = `
                     <div class="fiber-color ${fiber.color.toLowerCase()}"></div>
                     <span>Hilo ${fiber.number}</span>
                 `;
 
-                if (!fiber.used) {
+                if (canUseAsInput) {
                     item.onclick = () => {
                         // Deselect others
                         grid.querySelectorAll('.fiber-item').forEach(el => el.classList.remove('selected'));
@@ -2002,7 +2610,7 @@ class UIManager {
         }
     }
 
-    finalizeAddSplitter() {
+    async finalizeAddSplitter() {
         const type = this.splitterModals.splitterType.value;
         const connId = this.splitterModals.inputConnection.value;
 
@@ -2021,76 +2629,158 @@ class UIManager {
             }
         };
 
-        // Mark fiber as used
+        // Mark fiber termination (input to splitter)
         const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
         const fiber = connection.fiberDetails.find(f => f.number === this.selectedFiber.number);
-        fiber.used = true;
-        fiber.toTermination = {
+        const isFromNode = connection.from === this.currentSplitterNodeId;
+
+        const terminationData = {
             nodeId: this.currentSplitterNodeId,
             splitterId: splitter.id,
             port: 'input'
         };
-        this.inventoryManager.save();
 
-        this.inventoryManager.addSplitterToNode(this.currentSplitterNodeId, splitter);
+        if (isFromNode) {
+            fiber.fromTermination = terminationData;
+        } else {
+            fiber.toTermination = terminationData;
+        }
 
-        this.splitterModals.addSplitter.classList.add('hidden');
-        this.renderSplitterList(this.inventoryManager.getNode(this.currentSplitterNodeId));
-        this.selectedFiber = null;
+        await this.inventoryManager.updateConnection(connection);
+
+        const addedSplitter = await this.inventoryManager.addSplitterToNode(this.currentSplitterNodeId, splitter);
+
+        if (addedSplitter) {
+            this.splitterModals.addSplitter.classList.add('hidden');
+            this.renderSplitterList(this.inventoryManager.getNode(this.currentSplitterNodeId));
+            this.selectedFiber = null;
+        }
     }
 
     showSplitterPorts(splitterId) {
         this.currentSplitterId = splitterId;
         const splitter = this.inventoryManager.getSplitter(this.currentSplitterNodeId, splitterId);
+        const currentNode = this.inventoryManager.getNode(this.currentSplitterNodeId);
 
-        this.splitterModals.inputFiber.textContent = `Hilo ${splitter.inputFiber.fiberNumber} (${splitter.inputFiber.color})`;
-        this.splitterModals.inputFiber.style.color = splitter.inputFiber.color;
+        // Update splitter type display
+        this.splitterModals.splitterTypeDisplay.textContent = `SPLITTER ${splitter.type}`;
 
-        const grid = this.splitterModals.outputGrid;
-        grid.innerHTML = '';
+        // Update input fiber with color indicator
+        const inputColorHex = splitter.inputFiber.colorHex || this.inventoryManager.getColorHex(splitter.inputFiber.color);
+        const inputFiberHtml = `
+            <span style="display: inline-block; width: 12px; height: 12px; background: ${inputColorHex}; border-radius: 50%; margin-right: 8px; border: 2px solid #333;"></span>
+            Hilo ${splitter.inputFiber.fiberNumber} (${splitter.inputFiber.color})
+        `;
+        this.splitterModals.inputFiber.innerHTML = inputFiberHtml;
+        this.splitterModals.inputFiber.style.borderColor = inputColorHex;
+
+        // Render output ports with connection info
+        const list = this.splitterModals.outputList;
+        list.innerHTML = '';
 
         splitter.outputPorts.forEach(port => {
-            const btn = document.createElement('div');
-            btn.className = 'port-item';
-            btn.textContent = port.portNumber;
+            const portItem = document.createElement('div');
+            portItem.style.cssText = 'padding: 10px; background: white; border: 2px solid #ddd; border-radius: 6px; cursor: pointer; transition: all 0.2s;';
 
-            if (port.used) {
-                btn.style.backgroundColor = '#2ecc71';
-                btn.style.color = 'white';
-                // Find connected info
-                if (port.connectedTo) {
-                    btn.title = `Conectado via hilo ${port.connectedTo.fiberNumber}`;
+            // Get the color of this splitter port based on its number (TIA-598)
+            const colorMap = [
+                { name: 'Azul', hex: '#0066CC' },       // 1
+                { name: 'Naranja', hex: '#FF8800' },    // 2
+                { name: 'Verde', hex: '#00AA00' },      // 3
+                { name: 'Café', hex: '#8B4513' },       // 4
+                { name: 'Gris', hex: '#808080' },       // 5
+                { name: 'Blanco', hex: '#FFFFFF' },     // 6
+                { name: 'Rojo', hex: '#FF0000' },       // 7
+                { name: 'Negro', hex: '#000000' },      // 8
+                { name: 'Amarillo', hex: '#FFFF00' },   // 9
+                { name: 'Violeta', hex: '#8B00FF' },    // 10
+                { name: 'Rosa', hex: '#FF69B4' },       // 11
+                { name: 'Verde Agua', hex: '#00CED1' }  // 12
+            ];
+
+            const portColorInfo = colorMap[(port.portNumber - 1) % colorMap.length];
+            const portColorHex = portColorInfo.hex;  // Color del puerto del splitter
+
+            let connectionInfo = 'Libre';
+            let fiberColorHex = '#ccc';  // Color del hilo de la fibra conectada
+            let borderColor = '#ddd';    // Por defecto gris si está libre
+
+
+            if (port.used && port.connectedTo) {
+                // Get connection and fiber info
+                const conn = this.inventoryManager.getConnections().find(c => c.id === port.connectedTo.connectionId);
+                if (conn) {
+                    const fiber = conn.fiberDetails.find(f => f.number === port.connectedTo.fiberNumber);
+                    if (fiber) {
+                        // El círculo tiene el color del hilo de la fibra
+                        fiberColorHex = fiber.colorHex || this.inventoryManager.getColorHex(fiber.color);
+
+                        // El borde tiene el color del puerto del splitter
+                        borderColor = portColorHex;
+
+                        if (fiber.toTermination) {
+                            const destNode = this.inventoryManager.getNode(fiber.toTermination.nodeId);
+                            if (destNode) {
+                                connectionInfo = destNode.name;
+                            }
+                        }
+                    }
                 }
-            } else {
-                btn.style.backgroundColor = '#eee';
             }
 
-            btn.onclick = () => this.openFiberConnectionModal(port);
-            grid.appendChild(btn);
+            // Special styling for white fibers for better visibility
+            let dotBorder = '#333';
+            if (fiberColorHex === '#FFFFFF') {
+                dotBorder = '#999';
+            }
+
+            portItem.innerHTML = `
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="font-weight: bold; font-size: 14px;">Puerto ${port.portNumber}</div>
+                    <div style="width: 12px; height: 12px; background: ${fiberColorHex}; border-radius: 50%; border: 2px solid ${dotBorder};"></div>
+                </div>
+                <div style="font-size: 11px; color: #666; margin-top: 4px;">${connectionInfo}</div>
+            `;
+
+            portItem.style.borderColor = borderColor;
+
+            if (port.used) {
+                portItem.style.background = '#f0f9ff';
+            }
+
+            portItem.onmouseover = () => portItem.style.transform = 'scale(1.02)';
+            portItem.onmouseout = () => portItem.style.transform = 'scale(1)';
+            portItem.onclick = () => this.openFiberConnectionModal(port);
+
+            list.appendChild(portItem);
         });
 
         this.splitterModals.splitterPorts.classList.remove('hidden');
     }
 
-    deleteSplitter() {
+    async deleteSplitter() {
         if (!confirm('¿Estás seguro de eliminar este splitter? Se desconectarán todos los hilos.')) return;
 
         const splitter = this.inventoryManager.getSplitter(this.currentSplitterNodeId, this.currentSplitterId);
 
-        // Free input fiber
+        // Free input fiber - clear correct termination
         const conn = this.inventoryManager.getConnections().find(c => c.id === splitter.inputFiber.connectionId);
         if (conn) {
             const fiber = conn.fiberDetails.find(f => f.number === splitter.inputFiber.fiberNumber);
             if (fiber) {
-                fiber.used = false;
-                fiber.toTermination = null;
+                const isFromNode = conn.from === this.currentSplitterNodeId;
+                if (isFromNode) {
+                    fiber.fromTermination = null;
+                } else {
+                    fiber.toTermination = null;
+                }
             }
+            await this.inventoryManager.updateConnection(conn);
         }
 
         // Free output connections (TODO: Implement logic to free downstream fibers)
 
-        this.inventoryManager.deleteSplitter(this.currentSplitterNodeId, this.currentSplitterId);
-        this.inventoryManager.save();
+        await this.inventoryManager.deleteSplitter(this.currentSplitterNodeId, this.currentSplitterId);
 
         this.splitterModals.splitterPorts.classList.add('hidden');
         this.renderSplitterList(this.inventoryManager.getNode(this.currentSplitterNodeId));
@@ -2136,7 +2826,15 @@ class UIManager {
 
         if (connection) {
             select.innerHTML = '<option value="">Seleccionar hilo...</option>';
-            const availableFibers = connection.fiberDetails.filter(f => !f.used);
+
+            // Determine direction relative to current node
+            // If current node is 'from', we are sending from 'from', so we need 'fromTermination' to be free
+            // If current node is 'to', we are sending from 'to', so we need 'toTermination' to be free
+            const isFromNode = connection.from === this.currentSplitterNodeId;
+
+            const availableFibers = connection.fiberDetails.filter(f => {
+                return isFromNode ? !f.fromTermination : !f.toTermination;
+            });
 
             if (availableFibers.length === 0) {
                 select.innerHTML = '<option value="">Sin hilos disponibles</option>';
@@ -2166,7 +2864,8 @@ class UIManager {
         const { nodeId } = JSON.parse(val);
         const node = this.inventoryManager.getNode(nodeId);
 
-        if (node.type === 'RACK') {
+        if (node.type === 'RACK' || node.type === 'ODF') {
+            // For RACK/ODF nodes, show equipment selection
             const list = this.splitterModals.fiberDestEquipList;
             list.innerHTML = '';
             node.rack.forEach(eq => {
@@ -2183,8 +2882,8 @@ class UIManager {
             this.splitterModals.fiberConnStep1.classList.add('hidden');
             this.splitterModals.fiberConnStep2.classList.remove('hidden');
         } else {
-            // If not rack (e.g. another MUFLA or NAP), logic might differ
-            alert('Por ahora solo se soporta conexión a RACK/ODF.');
+            // For other node types (ONU, NAP, MUFLA, etc.), connect directly via fiber
+            this.finalizeDirectFiberConnection();
         }
     }
 
@@ -2201,7 +2900,7 @@ class UIManager {
                 btn.style.backgroundColor = '#eee';
                 btn.style.cursor = 'not-allowed';
             } else {
-                btn.onclick = () => this.finalizeFiberConnection(port);
+                btn.onclick = async () => await this.finalizeFiberConnection(port);
             }
             grid.appendChild(btn);
         });
@@ -2210,7 +2909,7 @@ class UIManager {
         this.splitterModals.fiberConnStep3.classList.remove('hidden');
     }
 
-    finalizeFiberConnection(destPort) {
+    async finalizeFiberConnection(destPort) {
         // 1. Get selected outgoing connection
         const { nodeId, connId } = JSON.parse(this.splitterModals.fiberDestNode.value);
         const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
@@ -2222,10 +2921,11 @@ class UIManager {
             return;
         }
 
+        const isFromNode = connection.from === this.currentSplitterNodeId;
         const availableFiber = connection.fiberDetails.find(f => f.number === parseInt(fiberNum));
 
-        if (!availableFiber || availableFiber.used) {
-            alert('El hilo seleccionado no está disponible.');
+        if (!availableFiber || (isFromNode ? availableFiber.fromTermination : availableFiber.toTermination)) {
+            alert('El hilo seleccionado no está disponible para salida.');
             return;
         }
 
@@ -2239,17 +2939,25 @@ class UIManager {
         };
 
         // 4. Update Fiber
-        availableFiber.used = true;
-        availableFiber.fromTermination = {
+        const splitterTermination = {
             nodeId: this.currentSplitterNodeId,
             splitterId: this.currentSplitterId,
             port: splitterPort.portNumber
         };
-        availableFiber.toTermination = {
+
+        const destTermination = {
             nodeId: nodeId,
             equipId: this.selectedDestEquip.id,
             portId: destPort.id
         };
+
+        if (isFromNode) {
+            availableFiber.fromTermination = splitterTermination;
+            availableFiber.toTermination = destTermination;
+        } else {
+            availableFiber.toTermination = splitterTermination;
+            availableFiber.fromTermination = destTermination;
+        }
 
         // 5. Update Destination Port
         const destNode = this.inventoryManager.getNode(nodeId);
@@ -2262,13 +2970,588 @@ class UIManager {
             portId: `split-${splitter.id}-p${splitterPort.portNumber}`
         };
 
-        this.inventoryManager.save();
-        this.inventoryManager.updateNode(destNode); // Save port changes
+        await this.inventoryManager.updateConnection(connection);
+        await this.inventoryManager.updateNode(destNode); // Save port changes
 
         alert(`Conectado exitosamente vía Hilo ${availableFiber.number} (${availableFiber.color})`);
 
         this.splitterModals.fiberConnection.classList.add('hidden');
         this.showSplitterPorts(this.currentSplitterId);
+    }
+
+    async finalizeDirectFiberConnection() {
+        // For direct connections to non-RACK nodes (ONU, NAP, MUFLA, etc.)
+        const { nodeId, connId } = JSON.parse(this.splitterModals.fiberDestNode.value);
+        const connection = this.inventoryManager.getConnections().find(c => c.id === connId);
+
+        // Get selected fiber
+        const fiberNum = this.splitterModals.fiberSelectFiber.value;
+        if (!fiberNum) {
+            alert('Por favor selecciona un hilo de salida.');
+            return;
+        }
+
+        const isFromNode = connection.from === this.currentSplitterNodeId;
+        const availableFiber = connection.fiberDetails.find(f => f.number === parseInt(fiberNum));
+
+        if (!availableFiber || (isFromNode ? availableFiber.fromTermination : availableFiber.toTermination)) {
+            alert('El hilo seleccionado no está disponible para salida.');
+            return;
+        }
+
+        // Update Splitter Port
+        const splitter = this.inventoryManager.getSplitter(this.currentSplitterNodeId, this.currentSplitterId);
+        const splitterPort = splitter.outputPorts.find(p => p.portNumber === this.selectedSplitterPort.portNumber);
+        splitterPort.used = true;
+        splitterPort.connectedTo = {
+            connectionId: connId,
+            fiberNumber: availableFiber.number
+        };
+
+        // Update Fiber
+        const splitterTermination = {
+            nodeId: this.currentSplitterNodeId,
+            splitterId: this.currentSplitterId,
+            port: splitterPort.portNumber
+        };
+
+        const destTermination = {
+            nodeId: nodeId,
+            equipId: null,  // No equipment for direct node connection
+            portId: null    // No port for direct node connection
+        };
+
+        if (isFromNode) {
+            availableFiber.fromTermination = splitterTermination;
+            availableFiber.toTermination = destTermination;
+        } else {
+            availableFiber.toTermination = splitterTermination;
+            availableFiber.fromTermination = destTermination;
+        }
+
+        // Update splitter node
+        const splitterNode = this.inventoryManager.getNode(this.currentSplitterNodeId);
+        await this.inventoryManager.updateNode(splitterNode);
+
+        // Update connection
+        await this.inventoryManager.updateConnection(connection);
+
+        alert(`Conectado exitosamente a nodo vía Hilo ${availableFiber.number} (${availableFiber.color})`);
+
+        this.splitterModals.fiberConnection.classList.add('hidden');
+        this.showSplitterPorts(this.currentSplitterId);
+    }
+
+    // --- Fusion Management Logic ---
+
+    openFusionModal(isRack = false) {
+        this.fusionState.nodeId = isRack ? this.currentRackNodeId : this.currentSplitterNodeId;
+        this.fusionState.isRack = isRack;
+
+        if (!this.fusionState.nodeId) {
+            console.error('No active node ID for fusion');
+            return;
+        }
+
+        const node = this.inventoryManager.getNode(this.fusionState.nodeId);
+
+        if (isRack) {
+            // Special ODF mode for Racks
+            this.openODFFusionModal(node);
+        } else {
+            // Normal fiber-to-fiber fusion mode
+            this.openNormalFusionModal(node);
+        }
+    }
+
+    openNormalFusionModal(node) {
+        // Populate cable dropdowns
+        const connections = this.inventoryManager.getConnections().filter(c =>
+            c.from === this.fusionState.nodeId || c.to === this.fusionState.nodeId
+        );
+
+        const populateSelect = (select, selectedValue = null) => {
+            select.innerHTML = '<option value="">Seleccionar cable...</option>';
+            connections.forEach(conn => {
+                const otherNodeId = conn.from === this.fusionState.nodeId ? conn.to : conn.from;
+                const otherNode = this.inventoryManager.getNode(otherNodeId);
+                const option = document.createElement('option');
+                option.value = conn.id;
+                option.textContent = `${conn.cableType} (${conn.fibers}h) -> ${otherNode.name}`;
+                if (selectedValue === conn.id) option.selected = true;
+                select.appendChild(option);
+            });
+        };
+
+        // Smart defaults: Select first two different cables
+        const connA = connections.length > 0 ? connections[0].id : '';
+        const connB = connections.length > 1 ? connections[1].id : '';
+
+        populateSelect(this.fusionUI.cableA, connA);
+        populateSelect(this.fusionUI.cableB, connB);
+
+        // Update labels
+        this.fusionUI.cableA.previousElementSibling.textContent = 'Cable A (Origen/Entrada)';
+        this.fusionUI.cableB.previousElementSibling.textContent = 'Cable B (Destino/Salida)';
+
+        // Clear lists
+        this.fusionUI.listA.innerHTML = '';
+        this.fusionUI.listB.innerHTML = '';
+
+        // Reset state
+        this.fusionState.selectedFiberA = null;
+        this.fusionState.selectedFiberB = null;
+        this.updateFusionButtons();
+
+        this.modals.fusion.classList.remove('hidden');
+
+        // Trigger render if defaults set
+        if (connA) this.handleFusionCableChange('A');
+        if (connB) this.handleFusionCableChange('B');
+    }
+
+    openODFFusionModal(node) {
+        // For Rack: Left side = ODF ports, Right side = Fiber strands
+
+        console.log('Opening ODF Fusion Modal for node:', node);
+        console.log('Node rack:', node.rack);
+
+        // Update labels
+        this.fusionUI.cableA.previousElementSibling.textContent = 'Equipo ODF';
+        this.fusionUI.cableB.previousElementSibling.textContent = 'Cable de Fibra';
+
+        // Populate ODF equipment selector
+        // Equipment is stored in node.rack, not node.equipment
+        const allEquipment = node.rack || [];
+        console.log('All equipment:', allEquipment);
+
+        const odfEquipment = allEquipment.filter(eq => {
+            console.log('Checking equipment:', eq, 'Type:', eq.type);
+            return eq.type === 'ODF';
+        });
+
+        console.log('Filtered ODF equipment:', odfEquipment);
+
+        this.fusionUI.cableA.innerHTML = '<option value="">Seleccionar ODF...</option>';
+
+        if (odfEquipment.length === 0) {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No hay equipos ODF en este rack';
+            option.disabled = true;
+            this.fusionUI.cableA.appendChild(option);
+        } else {
+            odfEquipment.forEach(eq => {
+                const option = document.createElement('option');
+                option.value = eq.id;
+                // Fix: eq.ports might be an object, convert to number
+                const portCount = typeof eq.ports === 'number' ? eq.ports : (eq.ports?.length || 0);
+                option.textContent = `${eq.name} (${portCount} puertos)`;
+                this.fusionUI.cableA.appendChild(option);
+            });
+        }
+
+        // Populate fiber cable selector
+        const connections = this.inventoryManager.getConnections().filter(c =>
+            c.from === this.fusionState.nodeId || c.to === this.fusionState.nodeId
+        );
+        this.fusionUI.cableB.innerHTML = '<option value="">Seleccionar cable...</option>';
+        connections.forEach(conn => {
+            const otherNodeId = conn.from === this.fusionState.nodeId ? conn.to : conn.from;
+            const otherNode = this.inventoryManager.getNode(otherNodeId);
+            const option = document.createElement('option');
+            option.value = conn.id;
+            option.textContent = `${conn.cableType} (${conn.fibers}h) -> ${otherNode.name}`;
+            this.fusionUI.cableB.appendChild(option);
+        });
+
+        // Clear lists
+        this.fusionUI.listA.innerHTML = '';
+        this.fusionUI.listB.innerHTML = '';
+
+        // Reset state
+        this.fusionState.selectedFiberA = null;
+        this.fusionState.selectedFiberB = null;
+        this.fusionState.selectedODFEquipId = null;
+        this.updateFusionButtons();
+
+        this.modals.fusion.classList.remove('hidden');
+
+        // Auto-select first ODF if available
+        if (odfEquipment.length > 0) {
+            this.fusionUI.cableA.value = odfEquipment[0].id;
+            this.handleFusionCableChange('A');
+        }
+    }
+
+    handleFusionCableChange(side) {
+        const select = side === 'A' ? this.fusionUI.cableA : this.fusionUI.cableB;
+        const list = side === 'A' ? this.fusionUI.listA : this.fusionUI.listB;
+        const value = select.value;
+
+        if (!value) {
+            list.innerHTML = '';
+            return;
+        }
+
+        if (this.fusionState.isRack && side === 'A') {
+            // Render ODF ports
+            this.renderODFPorts(value, list);
+        } else if (this.fusionState.isRack && side === 'B') {
+            // Render fiber strands
+            const connection = this.inventoryManager.getConnections().find(c => c.id === value);
+            this.renderFusionFibers(connection, list, side);
+        } else {
+            // Normal mode: render fibers
+            const connection = this.inventoryManager.getConnections().find(c => c.id === value);
+            this.renderFusionFibers(connection, list, side);
+        }
+    }
+
+    renderODFPorts(equipId, container) {
+        container.innerHTML = '';
+        const node = this.inventoryManager.getNode(this.fusionState.nodeId);
+        const equipment = (node.rack || []).find(eq => eq.id === equipId);
+
+        if (!equipment) {
+            console.error('Equipment not found:', equipId);
+            return;
+        }
+
+        console.log('Rendering ODF ports for equipment:', equipment);
+
+        this.fusionState.selectedODFEquipId = equipId;
+
+        // Get port count - handle both number and object
+        const portCount = typeof equipment.ports === 'number' ? equipment.ports : (equipment.ports?.length || 24);
+        console.log('Port count:', portCount);
+
+        for (let i = 1; i <= portCount; i++) {
+            const port = equipment.portData?.find(p => p.id === i) || { id: i, connected: false };
+
+            const item = document.createElement('div');
+            item.className = `fusion-fiber-item ${port.fiberConnection ? 'connected' : ''}`;
+
+            let statusText = 'Libre';
+            if (port.fiberConnection) {
+                statusText = `Conectado a Hilo ${port.fiberConnection.fiberNumber}`;
+            }
+
+            item.innerHTML = `
+                <div class="fiber-color" style="background-color: #4a90e2; border-radius: 4px;"></div>
+                <div class="fusion-fiber-info">
+                    <span class="fusion-fiber-name">Puerto ${i}</span>
+                    <span class="fusion-fiber-detail">${statusText}</span>
+                </div>
+            `;
+
+            item.onclick = () => {
+                this.handleODFPortSelection(equipId, port, item);
+            };
+
+            container.appendChild(item);
+        }
+    }
+
+    handleODFPortSelection(equipId, port, element) {
+        const list = this.fusionUI.listA;
+        list.querySelectorAll('.fusion-fiber-item').forEach(el => el.classList.remove('selected'));
+        element.classList.add('selected');
+
+        this.fusionState.selectedFiberA = {
+            equipId: equipId,
+            portId: port.id,
+            isConnected: !!port.fiberConnection
+        };
+
+        this.updateFusionButtons();
+    }
+
+    renderFusionFibers(connection, container, side) {
+        container.innerHTML = '';
+        const isFromNode = connection.from === this.fusionState.nodeId;
+
+        connection.fiberDetails.forEach(fiber => {
+            const item = document.createElement('div');
+
+            // Determine status
+            const termination = isFromNode ? fiber.fromTermination : fiber.toTermination;
+
+            let statusText = 'Libre';
+            let isConnected = false;
+            let isSplitter = false;
+            let isEquip = false;
+
+            if (termination) {
+                if (termination.connectionId) {
+                    isConnected = true;
+                    statusText = `Fusionado con Hilo ${termination.fiberNumber}`;
+                } else if (termination.splitterId) {
+                    isConnected = true;
+                    isSplitter = true;
+                    statusText = `✂️ En Splitter (Puerto ${termination.port})`;
+                } else if (termination.equipId) {
+                    isConnected = true;
+                    isEquip = true;
+                    const portInfo = termination.portId ? ` Puerto ${termination.portId}` : '';
+                    statusText = `🔌 En ODF${portInfo}`;
+                } else if (termination.nodeId === this.fusionState.nodeId) {
+                    statusText = 'Disponible en nodo';
+                }
+            }
+
+            // Style classes
+            let classes = ['fusion-fiber-item'];
+            if (isConnected) classes.push('connected');
+            if (isSplitter || isEquip) classes.push('used'); // Visual style for occupied/consumed
+
+            item.className = classes.join(' ');
+            item.innerHTML = `
+                <div class="fiber-color ${fiber.color.toLowerCase()}"></div>
+                <div class="fusion-fiber-info">
+                    <span class="fusion-fiber-name">Hilo ${fiber.number} (${fiber.color})</span>
+                    <span class="fusion-fiber-detail">${statusText}</span>
+                </div>
+            `;
+
+            // Only allow selection if NOT connected to splitter/equipment (consumed)
+            // OR if it is a fusion (so we can disconnect it)
+            // OR if it is free/generic
+            const isSelectable = !isSplitter && !isEquip;
+
+            if (isSelectable) {
+                item.onclick = () => {
+                    this.handleFusionSelection(side, connection.id, fiber, item, isConnected);
+                };
+            } else {
+                item.style.cursor = 'not-allowed';
+                item.style.opacity = '0.7';
+            }
+
+            container.appendChild(item);
+        });
+    }
+
+    handleFusionSelection(side, connId, fiber, element, isConnected) {
+        // Deselect previous in this list
+        const list = side === 'A' ? this.fusionUI.listA : this.fusionUI.listB;
+        list.querySelectorAll('.fusion-fiber-item').forEach(el => el.classList.remove('selected'));
+
+        // Select new
+        element.classList.add('selected');
+
+        const selection = { connId, fiberNumber: fiber.number, isConnected };
+
+        if (side === 'A') {
+            this.fusionState.selectedFiberA = selection;
+        } else {
+            this.fusionState.selectedFiberB = selection;
+        }
+
+        this.updateFusionButtons();
+    }
+
+    updateFusionButtons() {
+        const { selectedFiberA, selectedFiberB } = this.fusionState;
+        const btnConnect = this.fusionUI.btnConnect;
+        const btnDisconnect = this.fusionUI.btnDisconnect;
+
+        // Connect logic: Both selected, both NOT connected
+        const canConnect = selectedFiberA && selectedFiberB &&
+            !selectedFiberA.isConnected && !selectedFiberB.isConnected;
+
+        // Disconnect logic: Either selected, and IS connected via fusion
+        const canDisconnect = (selectedFiberA && selectedFiberA.isConnected) ||
+            (selectedFiberB && selectedFiberB.isConnected);
+
+        btnConnect.disabled = !canConnect;
+        btnDisconnect.disabled = !canDisconnect;
+    }
+
+    async fusionConnect() {
+        const { selectedFiberA, selectedFiberB, nodeId, isRack } = this.fusionState;
+        if (!selectedFiberA || !selectedFiberB) return;
+
+        if (isRack) {
+            // ODF mode: Connect ODF port to fiber strand
+            await this.connectODFToFiber();
+        } else {
+            // Normal mode: Connect fiber to fiber
+            await this.connectFiberToFiber();
+        }
+    }
+
+    async connectODFToFiber() {
+        const { selectedFiberA, selectedFiberB, nodeId, selectedODFEquipId } = this.fusionState;
+
+        // selectedFiberA = ODF port
+        // selectedFiberB = Fiber strand
+
+        const node = this.inventoryManager.getNode(nodeId);
+        const equipment = (node.rack || []).find(eq => eq.id === selectedODFEquipId);
+
+        if (!equipment) {
+            alert('Error: No se encontró el equipo ODF.');
+            return;
+        }
+
+        // Initialize portData if it doesn't exist
+        if (!equipment.portData) {
+            equipment.portData = [];
+        }
+
+        // Find or create port
+        let port = equipment.portData.find(p => p.id === selectedFiberA.portId);
+        if (!port) {
+            port = { id: selectedFiberA.portId, connected: false };
+            equipment.portData.push(port);
+        }
+
+        // Store fiber connection info in ODF port
+        port.fiberConnection = {
+            connectionId: selectedFiberB.connId,
+            fiberNumber: selectedFiberB.fiberNumber
+        };
+        port.connected = true;
+
+        // Update node
+        await this.inventoryManager.updateNode(node);
+
+        // NOW: Update the fiber connection to show it's connected to ODF
+        const connection = this.inventoryManager.getConnections().find(c => c.id === selectedFiberB.connId);
+        if (connection) {
+            const fiber = connection.fiberDetails.find(f => f.number === selectedFiberB.fiberNumber);
+            if (fiber) {
+                // Determine which termination to use based on connection direction
+                const isFromNode = connection.from === nodeId;
+
+                const termination = {
+                    nodeId: nodeId,
+                    equipId: selectedODFEquipId,
+                    portId: selectedFiberA.portId
+                };
+
+                if (isFromNode) {
+                    fiber.fromTermination = termination;
+                } else {
+                    fiber.toTermination = termination;
+                }
+
+                // Update connection in database
+                await this.inventoryManager.updateConnection(connection);
+            }
+        }
+
+        alert('Conexión ODF-Fibra realizada con éxito.');
+
+        // Refresh lists
+        this.handleFusionCableChange('A');
+        this.handleFusionCableChange('B');
+        this.updateFusionButtons();
+    }
+
+    async connectFiberToFiber() {
+        const { selectedFiberA, selectedFiberB, nodeId } = this.fusionState;
+
+        // Validation: Cannot fuse same fiber to itself
+        if (selectedFiberA.connId === selectedFiberB.connId && selectedFiberA.fiberNumber === selectedFiberB.fiberNumber) {
+            alert('No puedes fusionar un hilo consigo mismo.');
+            return;
+        }
+
+        // Get connections
+        const connA = this.inventoryManager.getConnections().find(c => c.id === selectedFiberA.connId);
+        const connB = this.inventoryManager.getConnections().find(c => c.id === selectedFiberB.connId);
+
+        const fiberA = connA.fiberDetails.find(f => f.number === selectedFiberA.fiberNumber);
+        const fiberB = connB.fiberDetails.find(f => f.number === selectedFiberB.fiberNumber);
+
+        // Determine termination slots
+        const isFromNodeA = connA.from === nodeId;
+        const isFromNodeB = connB.from === nodeId;
+
+        // Update Fiber A
+        const termA = {
+            nodeId: nodeId,
+            connectionId: connB.id,
+            fiberNumber: fiberB.number
+        };
+        if (isFromNodeA) fiberA.fromTermination = termA;
+        else fiberA.toTermination = termA;
+
+        // Update Fiber B
+        const termB = {
+            nodeId: nodeId,
+            connectionId: connA.id,
+            fiberNumber: fiberA.number
+        };
+        if (isFromNodeB) fiberB.fromTermination = termB;
+        else fiberB.toTermination = termB;
+
+        // Save
+        await this.inventoryManager.updateConnection(connA);
+        if (connA.id !== connB.id) {
+            await this.inventoryManager.updateConnection(connB);
+        }
+
+        alert('Fusión realizada con éxito.');
+
+        // Refresh lists
+        this.handleFusionCableChange('A');
+        this.handleFusionCableChange('B');
+        this.updateFusionButtons();
+    }
+
+    async fusionDisconnect() {
+        const { selectedFiberA, selectedFiberB, nodeId } = this.fusionState;
+
+        const disconnectFiber = async (selection) => {
+            if (!selection || !selection.isConnected) return;
+
+            const conn = this.inventoryManager.getConnections().find(c => c.id === selection.connId);
+            const fiber = conn.fiberDetails.find(f => f.number === selection.fiberNumber);
+            const isFromNode = conn.from === nodeId;
+
+            const termination = isFromNode ? fiber.fromTermination : fiber.toTermination;
+
+            // Check if it's a fusion (has connectionId)
+            if (termination && termination.connectionId) {
+                // We also need to clear the OTHER side of the fusion
+                const otherConn = this.inventoryManager.getConnections().find(c => c.id === termination.connectionId);
+                if (otherConn) {
+                    const otherFiber = otherConn.fiberDetails.find(f => f.number === termination.fiberNumber);
+                    if (otherFiber) {
+                        // Find which slot points back to us
+                        // It should be the slot at this nodeId
+                        // But wait, otherFiber might be connected to nodeId at 'from' or 'to'
+                        if (otherFiber.fromTermination && otherFiber.fromTermination.nodeId === nodeId) {
+                            otherFiber.fromTermination = null;
+                        } else if (otherFiber.toTermination && otherFiber.toTermination.nodeId === nodeId) {
+                            otherFiber.toTermination = null;
+                        }
+                        await this.inventoryManager.updateConnection(otherConn);
+                    }
+                }
+
+                // Clear this side
+                if (isFromNode) fiber.fromTermination = null;
+                else fiber.toTermination = null;
+
+                await this.inventoryManager.updateConnection(conn);
+            } else {
+                alert('Este hilo no está fusionado con otro cable (puede estar conectado a un equipo o splitter). Usa las otras herramientas para desconectarlo.');
+            }
+        };
+
+        if (selectedFiberA) await disconnectFiber(selectedFiberA);
+        if (selectedFiberB && (!selectedFiberA || selectedFiberA.connId !== selectedFiberB.connId || selectedFiberA.fiberNumber !== selectedFiberB.fiberNumber)) {
+            await disconnectFiber(selectedFiberB);
+        }
+
+        // Refresh lists
+        this.handleFusionCableChange('A');
+        this.handleFusionCableChange('B');
+        this.updateFusionButtons();
     }
 
     loadExistingData() {
@@ -2312,7 +3595,7 @@ class UIManager {
             item.style.fontSize = '14px';
             item.innerHTML = `
                 <span style="color: ${this.mapManager.getColorForType(node.type)}">●</span>
-                ${node.name} <small style="margin-left:auto; opacity:0.6">${node.type}</small>
+                    ${node.name} <small style="margin-left:auto; opacity:0.6">${node.type}</small>
             `;
             item.addEventListener('click', () => {
                 this.showNodeDetails(node.id);

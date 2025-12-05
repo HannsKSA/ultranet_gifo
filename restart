@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+"""
+Restart SGIFO server
+"""
+import subprocess
+import sys
+import time
+
+def is_port_in_use():
+    """Check if port 8000 is in use"""
+    result = subprocess.run(
+        ['lsof', '-ti:8000'],
+        capture_output=True,
+        text=True
+    )
+    return result.returncode == 0 and result.stdout.strip()
+
+def restart_server():
+    """Restart the SGIFO server"""
+    print("Restarting SGIFO...")
+    
+    # Stop the server
+    try:
+        if is_port_in_use():
+            result = subprocess.run(
+                ['lsof', '-ti:8000'],
+                capture_output=True,
+                text=True
+            )
+            pid = result.stdout.strip()
+            print(f"Stopping existing server (PID: {pid})...")
+            subprocess.run(['kill', pid])
+            
+            # Wait for port to be free
+            max_wait = 5
+            waited = 0
+            while is_port_in_use() and waited < max_wait:
+                time.sleep(0.5)
+                waited += 0.5
+            
+            if is_port_in_use():
+                print("Warning: Port still in use, forcing kill...")
+                subprocess.run(['kill', '-9', pid])
+                time.sleep(1)
+            
+            print("✓ Server stopped.")
+        else:
+            print("No server running.")
+    except Exception as e:
+        print(f"Note: {e}")
+    
+    # Start the server
+    print("Starting server...")
+    try:
+        subprocess.run(['python3', 'start'], check=True)
+    except KeyboardInterrupt:
+        print("\nServer stopped by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error starting server: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    restart_server()

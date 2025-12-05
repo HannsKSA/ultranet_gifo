@@ -1,0 +1,39 @@
+#!/usr/bin/env python3
+"""
+Stop SGIFO server
+"""
+import subprocess
+import sys
+
+def stop_server():
+    """Stop the SGIFO server running on port 8000"""
+    try:
+        # Find process using port 8000
+        result = subprocess.run(
+            ['lsof', '-ti:8000'],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode == 0 and result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            print(f"Stopping SGIFO server (PIDs: {', '.join(pids)})...")
+            
+            # Kill each process
+            for pid in pids:
+                if pid:
+                    subprocess.run(['kill', pid.strip()])
+            
+            print("✓ SGIFO server stopped successfully.")
+        else:
+            print("No SGIFO server running on port 8000.")
+            
+    except subprocess.CalledProcessError as e:
+        print(f"Error stopping server: {e}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Unexpected error: {e}")
+        sys.exit(1)
+
+if __name__ == '__main__':
+    stop_server()

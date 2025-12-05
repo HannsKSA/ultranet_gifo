@@ -1,0 +1,181 @@
+#!/usr/bin/env python3
+import os
+import sys
+import subprocess
+import time
+import webbrowser
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+import threading
+
+def install_package(package):
+    subprocess.check_call([sys.executable, "-m", "pip", "install", package])
+
+# Check and install dependencies
+try:
+    import psycopg2
+    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+except ImportError:
+    print("Installing psycopg2-binary...")
+    install_package("psycopg2-binary")
+    import psycopg2
+    from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    print("Installing python-dotenv...")
+    install_package("python-dotenv")
+    from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+SUPABASE_URL = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+SUPABASE_KEY = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+PORT = 8000
+
+def generate_db_config():
+    """Generate db.js from .env credentials"""
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        print("Warning: NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY not found in .env file.")
+        print("Supabase integration will not work.")
+        return
+    
+    db_js_content = f"""// db.js - Auto-generated from .env
+const SUPABASE_URL = '{SUPABASE_URL}';
+const SUPABASE_KEY = '{SUPABASE_KEY}';
+
+let supabaseClient = null;
+
+if (typeof supabase !== 'undefined') {{
+    supabaseClient = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+    console.log('Supabase initialized with URL:', SUPABASE_URL);
+}} else {{
+    console.error('Supabase SDK not loaded');
+}}
+"""
+    
+    with open('db.js', 'w') as f:
+        f.write(db_js_content)
+    
+    print("✓ db.js generated successfully with credentials from .env")
+
+def init_db():
+    if not DATABASE_URL:
+        print("Error: DATABASE_URL not found in .env file.")
+        return
+
+    print("Checking database connection and schema...")
+    try:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+        cur = conn.cursor()
+
+        # Create nodes table with ALL required columns
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS nodes (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                lat DOUBLE PRECISION NOT NULL,
+                lng DOUBLE PRECISION NOT NULL,
+                address TEXT,
+                plan TEXT,
+                equipment JSONB DEFAULT '[]'::jsonb,
+                rack JSONB DEFAULT '[]'::jsonb,
+                splitters JSONB DEFAULT '[]'::jsonb,
+                "damageReports" JSONB DEFAULT '[]'::jsonb,
+                "clientData" JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
+        
+        # Create connections table with ALL required columns
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS connections (
+                id TEXT PRIMARY KEY,
+                "from" TEXT NOT NULL,
+                "to" TEXT NOT NULL,
+                path JSONB NOT NULL,
+                "cableType" TEXT NOT NULL,
+                "sectionType" TEXT,
+                fibers INTEGER NOT NULL,
+                "fromPort" JSONB,
+                "toPort" JSONB,
+                "fiberDetails" JSONB DEFAULT '[]'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
+        
+        # Add missing columns if they don't exist (for existing databases)
+        migrations = [
+            ("nodes", "address", "TEXT"),
+            ("nodes", "plan", "TEXT"),
+            ("nodes", "equipment", "JSONB DEFAULT '[]'::jsonb"),
+            ("nodes", "rack", "JSONB DEFAULT '[]'::jsonb"),
+            ("nodes", "clientData", '"clientData"', "JSONB DEFAULT '{}'::jsonb"),
+            ("nodes", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+            ("connections", "sectionType", '"sectionType"', "TEXT"),
+            ("connections", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+        ]
+        
+        for migration in migrations:
+            if len(migration) == 3:
+                table, column, col_type = migration
+                column_check = column
+                column_add = column
+            else:
+                table, column_check, column_add, col_type = migration
+            
+            cur.execute(f"""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='{table}' AND column_name='{column_check}'
+                    ) THEN
+                        ALTER TABLE {table} ADD COLUMN {column_add} {col_type};
+                    END IF;
+                END $$;
+            """)
+        
+        # Create indexes for better performance
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);")
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_from ON connections("from");')
+        cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_to ON connections("to");')
+
+        # Disable Row Level Security (RLS) for development
+        # This allows public access to the tables
+        print("Configuring Row Level Security policies...")
+        cur.execute("ALTER TABLE nodes DISABLE ROW LEVEL SECURITY;")
+        cur.execute("ALTER TABLE connections DISABLE ROW LEVEL SECURITY;")
+        
+        print("✓ Database schema initialized successfully.")
+        print("✓ Row Level Security disabled for development.")
+        cur.close()
+        conn.close()
+
+    except Exception as e:
+        print(f"Error initializing database: {e}")
+        sys.exit(1)
+
+def run_server():
+    print(f"Starting server at http://localhost:{PORT}")
+    server_address = ('', PORT)
+    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    
+    # Open browser in a separate thread to not block server startup
+    threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
+    
+    try:
+        httpd.serve_forever()
+    except KeyboardInterrupt:
+        print("\nStopping server...")
+        httpd.server_close()
+
+if __name__ == "__main__":
+    print("Starting SGIFO...")
+    generate_db_config()
+    init_db()
+    run_server()

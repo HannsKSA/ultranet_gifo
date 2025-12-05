@@ -478,3 +478,62 @@ body {
 .fiber-color.aguamarina {
     background-color: #00cccc;
 }
+
+/* Fusion Management Styles */
+.fusion-fiber-list {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+    height: 100%;
+    overflow-y: auto;
+}
+
+.fusion-fiber-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    margin: 4px;
+    background-color: white;
+    border: 1px solid #e9ecef;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.fusion-fiber-item:hover {
+    background-color: #f1f3f5;
+    border-color: var(--primary-color);
+}
+
+.fusion-fiber-item.selected {
+    background-color: rgba(128, 0, 32, 0.1);
+    border-color: var(--primary-color);
+    box-shadow: 0 0 0 1px var(--primary-color);
+}
+
+.fusion-fiber-item.connected {
+    background-color: #e6f4ea; /* Light green */
+    border-color: #28a745;
+}
+
+.fusion-fiber-item.connected .fiber-status {
+    color: #28a745;
+    font-size: 11px;
+    margin-left: auto;
+}
+
+.fusion-fiber-info {
+    display: flex;
+    flex-direction: column;
+    margin-left: 10px;
+}
+
+.fusion-fiber-name {
+    font-weight: 500;
+    font-size: 13px;
+}
+
+.fusion-fiber-detail {
+    font-size: 11px;
+    color: #666;
+}
