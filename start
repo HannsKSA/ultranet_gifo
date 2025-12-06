@@ -114,9 +114,16 @@ def init_db():
             ("nodes", "plan", "TEXT"),
             ("nodes", "equipment", "JSONB DEFAULT '[]'::jsonb"),
             ("nodes", "rack", "JSONB DEFAULT '[]'::jsonb"),
+            ("nodes", "splitters", "JSONB DEFAULT '[]'::jsonb"),
+            ("nodes", "damageReports", '"damageReports"', "JSONB DEFAULT '[]'::jsonb"),
             ("nodes", "clientData", '"clientData"', "JSONB DEFAULT '{}'::jsonb"),
             ("nodes", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
+            ("connections", "cableType", '"cableType"', "TEXT"),
             ("connections", "sectionType", '"sectionType"', "TEXT"),
+            ("connections", "fibers", "INTEGER"),
+            ("connections", "fromPort", '"fromPort"', "JSONB"),
+            ("connections", "toPort", '"toPort"', "JSONB"),
+            ("connections", "fiberDetails", '"fiberDetails"', "JSONB DEFAULT '[]'::jsonb"),
             ("connections", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
         ]
         
@@ -139,18 +146,206 @@ def init_db():
                     END IF;
                 END $$;
             """)
+
+        # 2. Add project_id columns if they don't exist
+        column_migrations = [
+            ("nodes", "project_id", "UUID"),
+            ("connections", "project_id", "UUID")
+        ]
+
+        for table, column, col_type in column_migrations:
+            cur.execute(f"""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='{table}' AND column_name='{column}'
+                    ) THEN
+                        ALTER TABLE {table} ADD COLUMN {column} {col_type};
+                    END IF;
+                END $$;
+            """)
+
+        # 3. Create New Tables (Projects, Users, Assignments)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS projects (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                created_by UUID,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
         
-        # Create indexes for better performance
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_profiles (
+                id UUID PRIMARY KEY,
+                email TEXT UNIQUE,
+                role TEXT DEFAULT 'tecnico', -- super-admin, admin, tecnico, cliente
+                full_name TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS project_assignments (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                project_id UUID REFERENCES projects(id) ON DELETE CASCADE,
+                user_id UUID REFERENCES user_profiles(id) ON DELETE CASCADE,
+                assigned_by UUID,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(project_id, user_id)
+            );
+        """)
+
+        # 4. Create Indexes
         cur.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_from ON connections("from");')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_to ON connections("to");')
 
-        # Disable Row Level Security (RLS) for development
-        # This allows public access to the tables
+        # 5. Migration: Assign existing data to a default project if project_id is NULL
+        # Only run this if we have data to avoid unnecessary "Default Project" creation on empty DB
+        cur.execute("SELECT count(*) FROM nodes WHERE project_id IS NULL")
+        orphaned_count = cur.fetchone()[0]
+        
+        if orphaned_count > 0:
+            print(f"Checking for orphaned data... Found {orphaned_count} items.")
+            print(f"Creating 'Default Project' for orphaned data...")
+            # Create Default Project if not exists (or find one)
+            cur.execute("SELECT id FROM projects WHERE name = 'Default Project' LIMIT 1")
+            res = cur.fetchone()
+            if res:
+                default_project_id = res[0]
+            else:
+                cur.execute("INSERT INTO projects (name, description) VALUES ('Default Project', 'Migrated Data') RETURNING id")
+                default_project_id = cur.fetchone()[0]
+            
+            # Update Nodes
+            cur.execute("UPDATE nodes SET project_id = %s WHERE project_id IS NULL", (default_project_id,))
+            # Update Connections
+            cur.execute("UPDATE connections SET project_id = %s WHERE project_id IS NULL", (default_project_id,))
+            print(f"Migrated data to project {default_project_id}")
+        else:
+             # print("No orphaned data found.")
+             pass
+
         print("Configuring Row Level Security policies...")
         cur.execute("ALTER TABLE nodes DISABLE ROW LEVEL SECURITY;")
         cur.execute("ALTER TABLE connections DISABLE ROW LEVEL SECURITY;")
+        cur.execute("ALTER TABLE projects DISABLE ROW LEVEL SECURITY;")
+        cur.execute("ALTER TABLE user_profiles DISABLE ROW LEVEL SECURITY;")
+        cur.execute("ALTER TABLE project_assignments DISABLE ROW LEVEL SECURITY;")
         
+        # Trigger to automatically create profile on signup
+        # Note: This requires access to auth schema which might differ in permissions, 
+        # but usually postgres user has it.
+        try:
+            print("Setting up Auth Triggers...")
+            
+            # Load Super Admin Credentials from Env
+            SUPER_EMAIL = os.getenv("USER_SUPERADMIN_EMAIL")
+            SUPER_PASS = os.getenv("USER_SUPERADMIN_PASSWORD")
+            
+            if not SUPER_EMAIL or not SUPER_PASS:
+                print("\nERROR: Super-Usuario no definido, leer documentacion.")
+                print("Debes configurar USER_SUPERADMIN_EMAIL y USER_SUPERADMIN_PASSWORD en el archivo .env")
+                sys.exit(1)
+            
+            if SUPER_EMAIL:
+                # Formatted SQL for Trigger
+                trigger_func_sql = f"""
+                    CREATE OR REPLACE FUNCTION public.handle_new_user() 
+                    RETURNS trigger AS $$
+                    BEGIN
+                      INSERT INTO public.user_profiles (id, email, role, full_name)
+                      VALUES (new.id, new.email, 
+                        CASE WHEN new.email = '{SUPER_EMAIL}' THEN 'super-admin' ELSE 'tecnico' END,
+                        new.raw_user_meta_data->>'full_name');
+                      RETURN new;
+                    END;
+                    $$ LANGUAGE plpgsql SECURITY DEFINER;
+                """
+                cur.execute(trigger_func_sql)
+                
+                # Check if trigger exists
+                cur.execute("SELECT 1 FROM pg_trigger WHERE tgname = 'on_auth_user_created'")
+                if not cur.fetchone():
+                    cur.execute("""
+                        CREATE TRIGGER on_auth_user_created
+                        AFTER INSERT ON auth.users
+                        FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+                    """)
+                
+                # Ensure Master User is Super-Admin if they already exist
+                cur.execute("UPDATE public.user_profiles SET role = 'super-admin' WHERE email = %s", (SUPER_EMAIL,))
+                print("✓ Auth triggers configured.")
+            else:
+                 print("Warning: USER_SUPERADMIN_EMAIL not set in .env. Super Admin trigger not configured specific to an email.")
+
+        except Exception as e:
+            print(f"Warning: Could not configure auth triggers (might be permission issue): {e}")
+
+        # Create Super Admin if not exists
+        if SUPER_EMAIL and SUPER_PASS:
+            try:
+                print("Ensuring Super Admin exists...")
+                # Enable pgcrypto for password hashing
+                cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto;")
+                
+                # Check if user exists
+                cur.execute("SELECT id FROM auth.users WHERE email = %s", (SUPER_EMAIL,))
+                if not cur.fetchone():
+                    print(f"Creating super-admin user '{SUPER_EMAIL}'...")
+                    # Insert into auth.users using pgcrypto for bcrypt hash
+                    cur.execute("""
+                        INSERT INTO auth.users (
+                            instance_id,
+                            id,
+                            aud,
+                            role,
+                            email,
+                            encrypted_password,
+                            email_confirmed_at,
+                            recovery_sent_at,
+                            last_sign_in_at,
+                            raw_app_meta_data,
+                            raw_user_meta_data,
+                            created_at,
+                            updated_at,
+                            confirmation_token,
+                            email_change,
+                            email_change_token_new,
+                            recovery_token
+                        ) VALUES (
+                            '00000000-0000-0000-0000-000000000000',
+                            gen_random_uuid(),
+                            'authenticated',
+                            'authenticated',
+                            %s,
+                            crypt(%s, gen_salt('bf')),
+                            now(),
+                            now(),
+                            now(),
+                            '{"provider": "email", "providers": ["email"]}',
+                            '{"full_name": "Super Admin"}',
+                            now(),
+                            now(),
+                            '',
+                            '',
+                            '',
+                            ''
+                        );
+                    """, (SUPER_EMAIL, SUPER_PASS))
+                    print("✓ Super Admin created in auth.users")
+                else:
+                    print("✓ Super Admin already exists in auth.users")
+            except Exception as e:
+                 print(f"Error creating super admin: {e}")
+        else:
+            print("Skipping Super Admin creation: USER_SUPERADMIN_EMAIL and USER_SUPERADMIN_PASSWORD variables not found.")
+                
+
+
         print("✓ Database schema initialized successfully.")
         print("✓ Row Level Security disabled for development.")
         cur.close()
@@ -160,10 +355,81 @@ def init_db():
         print(f"Error initializing database: {e}")
         sys.exit(1)
 
+# Custom Request Handler for Local API
+import json
+from http.server import SimpleHTTPRequestHandler
+
+class CustomHandler(SimpleHTTPRequestHandler):
+    def do_POST(self):
+        if self.path.startswith('/api/'):
+            content_length = int(self.headers['Content-Length'])
+            post_data = self.rfile.read(content_length)
+            data = json.loads(post_data.decode('utf-8'))
+            
+            response = {'success': False, 'message': 'Unknown error'}
+            
+            try:
+                conn = psycopg2.connect(DATABASE_URL)
+                conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+                cur = conn.cursor()
+
+                if self.path == '/api/create_user':
+                    email = data.get('email')
+                    password = data.get('password')
+                    role = data.get('role', 'tecnico')
+                    full_name = data.get('full_name', '')
+                    
+                    # Check if user exists
+                    cur.execute("SELECT id FROM auth.users WHERE email = %s", (email,))
+                    if cur.fetchone():
+                        response = {'success': False, 'message': 'El usuario ya existe'}
+                    else:
+                        # Create in auth.users
+                        cur.execute("""
+                            INSERT INTO auth.users (
+                                instance_id, id, aud, role, email, encrypted_password, 
+                                email_confirmed_at, raw_app_meta_data, raw_user_meta_data, created_at, updated_at
+                            ) VALUES (
+                                '00000000-0000-0000-0000-000000000000', gen_random_uuid(), 'authenticated', 'authenticated', 
+                                %s, crypt(%s, gen_salt('bf')), now(), 
+                                '{"provider": "email", "providers": ["email"]}', 
+                                %s, now(), now()
+                            ) RETURNING id
+                        """, (email, password, json.dumps({"full_name": full_name})))
+                        new_id = cur.fetchone()[0]
+                        
+                        # Create profile (Trigger might handle this, but let's be safe/explicit if trigger fails or updates)
+                        # We used a trigger for INSERT on auth.users, so it should be fine.
+                        # But we need to ensure the role is set correctly, trigger default is 'tecnico' unless 'hannssa'
+                        # So update the role
+                        cur.execute("UPDATE public.user_profiles SET role = %s WHERE id = %s", (role, new_id))
+                        
+                        response = {'success': True, 'message': 'Usuario creado exitosamente'}
+
+                elif self.path == '/api/update_password':
+                    user_id = data.get('user_id')
+                    new_password = data.get('new_password')
+                    
+                    cur.execute("UPDATE auth.users SET encrypted_password = crypt(%s, gen_salt('bf')) WHERE id = %s", (new_password, user_id))
+                    response = {'success': True, 'message': 'Contraseña actualizada'}
+
+                cur.close()
+                conn.close()
+            except Exception as e:
+                print(f"API Error: {e}")
+                response = {'success': False, 'message': str(e)}
+
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(response).encode('utf-8'))
+        else:
+            super().do_POST()
+
 def run_server():
     print(f"Starting server at http://localhost:{PORT}")
     server_address = ('', PORT)
-    httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
+    httpd = HTTPServer(server_address, CustomHandler)
     
     # Open browser in a separate thread to not block server startup
     threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
@@ -178,4 +444,9 @@ if __name__ == "__main__":
     print("Starting SGIFO...")
     generate_db_config()
     init_db()
+    
+    if "--init-only" in sys.argv:
+        print("Initialization complete. Exiting.")
+        sys.exit(0)
+
     run_server()

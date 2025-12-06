@@ -266,7 +266,9 @@
                 <div class="user-profile">
                     <button id="btn-locate-me" class="btn-secondary" style="font-size: 12px; padding: 5px 10px;">📍 Mi
                         Ubicación</button>
-                    <span>Admin</span>
+                    <span style="margin-right: 10px;">Admin</span>
+                    <button id="btn-logout" class="btn-secondary"
+                        style="font-size: 12px; padding: 5px 10px; background-color: #666; color: white;">Salir</button>
                 </div>
             </header>
 
@@ -616,6 +618,69 @@
             </div>
         </div>
 
+        <!-- Login Modal -->
+        <div id="modal-login" class="modal-overlay hidden" style="z-index: 2000;">
+            <div class="modal-content" style="max-width: 400px; text-align: center;">
+                <h3>SGIFO Acesso</h3>
+                <p>Ingresa tus credenciales para continuar</p>
+                <form id="form-login" onsubmit="return false;" style="margin-top: 20px;">
+                    <div class="form-group" style="text-align: left;">
+                        <label class="form-label">Email</label>
+                        <input type="email" class="form-input" id="login-email" required>
+                    </div>
+                    <div class="form-group" style="text-align: left;">
+                        <label class="form-label">Contraseña</label>
+                        <div style="position:relative; display:flex;">
+                            <input type="password" class="form-input" id="login-password" required style="flex:1;">
+                            <span id="toggle-password" style="padding:10px; cursor:pointer;"
+                                title="Ver Contraseña">👁️</span>
+                        </div>
+                    </div>
+                    <button type="submit" class="action-btn" style="width: 100%; margin-top: 10px;">Iniciar
+                        Sesión</button>
+                    <!-- <button type="button" class="btn-secondary" id="btn-signup" style="width: 100%; margin-top: 10px;">Registrarse</button> -->
+                </form>
+                <p id="login-error" style="color: red; display: none; margin-top: 10px; font-size: 13px;"></p>
+            </div>
+        </div>
+
+        <!-- Project Selection Modal -->
+        <div id="modal-projects" class="modal-overlay hidden" style="z-index: 1500;">
+            <div class="modal-content" style="max-width: 600px;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                    <h3>Mis Proyectos</h3>
+                    <button id="btn-create-project" class="action-btn" style="padding: 5px 10px; font-size: 12px;">+
+                        Crear Proyecto</button>
+                </div>
+
+                <div id="project-list" class="list-group" style="max-height: 400px; overflow-y: auto;">
+                    <!-- Projects injected here -->
+                    <p class="empty-state">Cargando proyectos...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Create Project Modal -->
+        <div id="modal-create-project" class="modal-overlay hidden" style="z-index: 1600;">
+            <div class="modal-content">
+                <h3>Crear Nuevo Proyecto</h3>
+                <form id="form-create-project" onsubmit="return false;">
+                    <div class="form-group">
+                        <label class="form-label">Nombre del Proyecto</label>
+                        <input type="text" class="form-input" id="new-project-name" required>
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Descripción</label>
+                        <textarea class="form-input" id="new-project-desc"></textarea>
+                    </div>
+                    <div class="form-actions">
+                        <button type="button" class="btn-secondary" id="btn-cancel-create-project">Cancelar</button>
+                        <button type="submit" class="action-btn">Crear</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
     </div>
 
     <!-- Leaflet JS -->
@@ -627,7 +692,7 @@
     <script src="db.js"></script>
 
     <!-- App JS -->
-    <script src="app.js?v=25"></script>
+    <script src="app.js?v=26"></script>
 </body>
 
 </html>

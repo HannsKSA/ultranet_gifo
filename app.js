@@ -274,13 +274,560 @@ class MapManager {
     }
 }
 
+class UserManager {
+    constructor(uiManager) {
+        this.uiManager = uiManager;
+        this.user = null;
+        this.profile = null;
+        this.projects = [];
+        this.currentProject = null;
+
+        // DOM Elements
+        this.loginModal = document.getElementById('modal-login');
+        this.projectModal = document.getElementById('modal-projects');
+        this.createProjectModal = document.getElementById('modal-create-project');
+
+        this.loginForm = document.getElementById('form-login');
+        this.createProjectForm = document.getElementById('form-create-project');
+
+        this.loginError = document.getElementById('login-error');
+        this.projectList = document.getElementById('project-list');
+
+        this.bindEvents();
+    }
+
+    bindEvents() {
+        this.loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const email = document.getElementById('login-email').value;
+            const password = document.getElementById('login-password').value;
+            await this.login(email, password);
+        });
+
+        const togglePassword = document.getElementById('toggle-password');
+        if (togglePassword) {
+            togglePassword.addEventListener('click', () => {
+                const passwordInput = document.getElementById('login-password');
+                if (passwordInput.type === 'password') {
+                    passwordInput.type = 'text';
+                    togglePassword.innerText = '🙈';
+                } else {
+                    passwordInput.type = 'password';
+                    togglePassword.innerText = '👁️';
+                }
+            });
+        }
+
+        document.getElementById('btn-create-project').addEventListener('click', () => {
+            this.projectModal.classList.add('hidden');
+            this.createProjectModal.classList.remove('hidden');
+        });
+
+        document.getElementById('btn-cancel-create-project').addEventListener('click', () => {
+            this.createProjectModal.classList.add('hidden');
+            this.projectModal.classList.remove('hidden');
+        });
+
+        this.createProjectForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('new-project-name').value;
+            const desc = document.getElementById('new-project-desc').value;
+            await this.createProject(name, desc);
+        });
+
+        const btnLogout = document.getElementById('btn-logout');
+        if (btnLogout) {
+            btnLogout.addEventListener('click', async () => {
+                await supabaseClient.auth.signOut();
+            });
+        }
+    }
+
+    async init() {
+        const { data: { session } } = await supabaseClient.auth.getSession();
+        if (session) {
+            this.user = session.user;
+            await this.loadProfile();
+        } else {
+            this.showLogin();
+        }
+
+        supabaseClient.auth.onAuthStateChange(async (event, session) => {
+            if (event === 'SIGNED_IN') {
+                this.user = session.user;
+                await this.loadProfile();
+            } else if (event === 'SIGNED_OUT') {
+                this.user = null;
+                this.profile = null;
+                this.showLogin();
+                // Reset UI?
+                window.location.reload();
+            }
+        });
+    }
+
+    showLogin() {
+        this.loginModal.classList.remove('hidden');
+    }
+
+    hideLogin() {
+        this.loginModal.classList.add('hidden');
+    }
+
+    async login(email, password) {
+        this.loginError.style.display = 'none';
+        try {
+            const { data, error } = await supabaseClient.auth.signInWithPassword({
+                email,
+                password
+            });
+
+            if (error) throw error;
+            this.hideLogin();
+        } catch (e) {
+            this.loginError.innerText = e.message;
+            this.loginError.style.display = 'block';
+        }
+    }
+
+    async loadProfile() {
+        try {
+            let { data, error } = await supabaseClient
+                .from('user_profiles')
+                .select('*')
+                .eq('id', this.user.id)
+                .single();
+
+            if (!data) {
+                // If checking auth.users for super-admin or just default
+                console.log("No profile found, assuming default or first login.");
+                data = { role: 'tecnico', full_name: this.user.email };
+            }
+
+            this.profile = data;
+            this.updateHeader();
+
+            // If Client, load specific view?
+            if (this.profile.role === 'cliente') {
+                // TODO: Load Client Data directly
+                alert("Vista de cliente no implementada completamente. Redirigiendo a vista segura.");
+                // For now, let them see projects but limited?
+            }
+
+            await this.loadProjects();
+
+        } catch (e) {
+            console.error("Error loading profile", e);
+        }
+    }
+
+    updateHeader() {
+        const profileEl = document.querySelector('.user-profile span');
+        if (profileEl) {
+            profileEl.innerText = `${this.profile.role.toUpperCase()} | ${this.user.email}`;
+        }
+    }
+
+    async loadProjects() {
+        this.projectList.innerHTML = '<p class="empty-state">Cargando...</p>';
+        this.projectModal.classList.remove('hidden');
+
+        // Hide Create Button for non-admins
+        const btnCreate = document.getElementById('btn-create-project');
+        if (this.profile.role === 'tecnico' || this.profile.role === 'cliente') {
+            if (btnCreate) btnCreate.style.display = 'none';
+        } else {
+            if (btnCreate) btnCreate.style.display = 'block';
+        }
+
+        let projects = [];
+
+        try {
+            if (this.profile.role === 'super-admin') {
+                const { data } = await supabaseClient.from('projects').select('*');
+                projects = data || [];
+            } else {
+                // Created by me
+                const { data: created } = await supabaseClient.from('projects').select('*').eq('created_by', this.user.id);
+
+                // Assigned to me
+                const { data: assignments } = await supabaseClient.from('project_assignments').select('project_id').eq('user_id', this.user.id);
+                const assignedIds = assignments ? assignments.map(a => a.project_id) : [];
+
+                let assigned = [];
+                if (assignedIds.length > 0) {
+                    // Use 'in' filter properly
+                    const { data } = await supabaseClient.from('projects').select('*').in('id', assignedIds);
+                    assigned = data || [];
+                }
+
+                // Merge uniqueness
+                const map = new Map();
+                if (created) created.forEach(p => map.set(p.id, p));
+                if (assigned) assigned.forEach(p => map.set(p.id, p));
+                projects = Array.from(map.values());
+            }
+
+            this.renderProjects(projects);
+
+        } catch (e) {
+            console.error("Error loading projects", e);
+            this.projectList.innerHTML = '<p class="empty-state" style="color:red">Error cargando proyectos.</p>';
+        }
+    }
+
+    renderProjects(projects) {
+        this.projectList.innerHTML = '';
+        if (projects.length === 0) {
+            this.projectList.innerHTML = '<p class="empty-state">No hay proyectos disponibles.</p>';
+            return;
+        }
+
+        projects.forEach(p => {
+            const item = document.createElement('div');
+            item.className = 'nav-btn'; // Recycle style
+            item.style.padding = '10px';
+            item.style.marginBottom = '5px';
+            item.style.border = '1px solid #eee';
+            item.style.cursor = 'pointer';
+            item.innerHTML = `<strong>${p.name}</strong><br><small>${p.description || ''}</small>`;
+            item.addEventListener('click', () => this.selectProject(p));
+            this.projectList.appendChild(item);
+        });
+    }
+
+    async createProject(name, desc) {
+        try {
+            const { data, error } = await supabaseClient.from('projects').insert({
+                name: name,
+                description: desc,
+                created_by: this.user.id
+            }).select().single();
+
+            if (error) throw error;
+
+            this.createProjectModal.classList.add('hidden');
+            this.projectModal.classList.remove('hidden');
+            await this.loadProjects(); // Reload
+
+        } catch (e) {
+            alert("Error creando proyecto: " + e.message);
+        }
+    }
+
+    selectProject(project) {
+        this.currentProject = project;
+        this.projectModal.classList.add('hidden');
+
+        // Initialize Inventory with Project ID
+        console.log("Selected Project:", project.name);
+
+        // Update Window Title or Header
+        document.querySelector('.sidebar-header p').innerText = `Proyecto: ${project.name}`;
+
+        // Delegate to UIManager/InventoryManager
+        if (this.uiManager) {
+            this.uiManager.loadProject(project.id, this.profile.role);
+        }
+
+        // If Admin, show admin tools
+        if (this.profile.role === 'super-admin') {
+            // Maybe add a floating admin button or something?
+            // For now, let's rely on the header profile click or new buttons?
+            // Or better, inject an "Admin Panel" button in sidebar.
+            if (window.adminManager) window.adminManager.init();
+        }
+    }
+}
+
+class AdminManager {
+    constructor() {
+        this.users = [];
+        this.projects = [];
+        this.modal = null;
+        this.initialized = false;
+    }
+
+    init() {
+        if (this.initialized) return;
+        this.createAdminButton();
+        this.createAdminModal();
+        this.initialized = true;
+    }
+
+    createAdminButton() {
+        const nav = document.querySelector('.sidebar-nav');
+        if (!nav) return;
+
+        const btn = document.createElement('button');
+        btn.className = 'nav-btn';
+        btn.id = 'btn-admin-panel';
+        btn.style.marginTop = '20px';
+        btn.style.backgroundColor = '#2c3e50';
+        btn.innerHTML = '<span class="icon">⚙️</span> Panel Admin';
+        btn.onclick = () => this.openAdminPanel();
+
+        nav.appendChild(btn);
+    }
+
+    createAdminModal() {
+        // Create Modal HTML dynamically
+        const modalHtml = `
+        <div id="modal-admin-panel" class="modal-overlay hidden" style="z-index: 2500;">
+            <div class="modal-content" style="max-width: 800px; height: 80vh; display:flex; flex-direction:column;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:20px;">
+                    <h3>Panel de Super Admin</h3>
+                    <button class="btn-secondary" onclick="document.getElementById('modal-admin-panel').classList.add('hidden')">Cerrar</button>
+                </div>
+                
+                <div style="display:flex; gap:10px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
+                    <button class="action-btn" id="tab-users" onclick="window.adminManager.switchTab('users')">Usuarios</button>
+                    <button class="btn-secondary" id="tab-projects" onclick="window.adminManager.switchTab('projects')">Proyectos</button>
+                </div>
+
+                <div id="admin-content-users" style="flex:1; overflow-y:auto;">
+                    <div style="display:flex; gap:10px; margin-bottom:10px;">
+                        <button class="action-btn" style="padding:5px;" onclick="window.adminManager.refreshUsers()">🔄 Refrescar</button>
+                        <button class="action-btn" style="background-color:#2ecc71; padding:5px;" onclick="window.adminManager.openCreateUserPrompt()">+ Nuevo Usuario</button>
+                    </div>
+                    <table style="width:100%; font-size:13px; border-collapse: collapse;">
+                        <thead style="background:#f5f5f5; text-align:left;">
+                            <tr>
+                                <th style="padding:8px;">Email</th>
+                                <th style="padding:8px;">Rol</th>
+                                <th style="padding:8px;">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="admin-user-list"></tbody>
+                    </table>
+                </div>
+
+                <div id="admin-content-projects" class="hidden" style="flex:1; overflow-y:auto;">
+                     <button class="action-btn" style="margin-bottom:10px; padding:5px;" onclick="window.adminManager.refreshProjects()">🔄 Refrescar Proyectos</button>
+                     <div id="admin-project-list"></div>
+                </div>
+            </div>
+        </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        this.modal = document.getElementById('modal-admin-panel');
+    }
+
+    async openCreateUserPrompt() {
+        const email = prompt("Email del nuevo usuario:");
+        if (!email) return;
+        const password = prompt("Contraseña temporal:");
+        if (!password) return;
+        const role = prompt("Rol (super-admin, admin, tecnico, cliente):", "tecnico");
+        if (!role) return;
+
+        try {
+            const resp = await fetch('/api/create_user', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password, role, full_name: email.split('@')[0] })
+            });
+            const res = await resp.json();
+            if (res.success) {
+                alert("Usuario creado exitosamente.");
+                this.refreshUsers();
+            } else {
+                alert("Error: " + res.message);
+            }
+        } catch (e) {
+            alert("Error de conexión: " + e.message);
+        }
+    }
+
+    async resetPassword(userId) {
+        const password = prompt("Ingrese la nueva contraseña:");
+        if (!password) return;
+
+        try {
+            const resp = await fetch('/api/update_password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ user_id: userId, new_password: password })
+            });
+            const res = await resp.json();
+            if (res.success) {
+                alert("Contraseña actualizada exitosamente.");
+            } else {
+                alert("Error: " + res.message);
+            }
+        } catch (e) {
+            alert("Error de conexión: " + e.message);
+        }
+    }
+
+    openAdminPanel() {
+        this.modal.classList.remove('hidden');
+        this.switchTab('users');
+    }
+
+    switchTab(tab) {
+        document.getElementById('admin-content-users').classList.add('hidden');
+        document.getElementById('admin-content-projects').classList.add('hidden');
+        document.getElementById(`admin-content-${tab}`).classList.remove('hidden');
+
+        // Toggle btn styles
+        document.getElementById('tab-users').className = tab === 'users' ? 'action-btn' : 'btn-secondary';
+        document.getElementById('tab-projects').className = tab === 'projects' ? 'action-btn' : 'btn-secondary';
+
+        if (tab === 'users') this.refreshUsers();
+        if (tab === 'projects') this.refreshProjects();
+    }
+
+    async refreshUsers() {
+        const tbody = document.getElementById('admin-user-list');
+        tbody.innerHTML = '<tr><td colspan="3">Cargando...</td></tr>';
+
+        try {
+            const { data, error } = await supabaseClient.from('user_profiles').select('*').order('email');
+            if (error) throw error;
+
+            tbody.innerHTML = '';
+            data.forEach(u => {
+                const tr = document.createElement('tr');
+                tr.style.borderBottom = '1px solid #eee';
+                tr.innerHTML = `
+                    <td style="padding:8px;">${u.email}</td>
+                    <td style="padding:8px;">
+                        <select onchange="window.adminManager.updateRole('${u.id}', this.value)" style="padding:2px;">
+                            <option value="super-admin" ${u.role === 'super-admin' ? 'selected' : ''}>Super Admin</option>
+                            <option value="admin" ${u.role === 'admin' ? 'selected' : ''}>Admin</option>
+                            <option value="tecnico" ${u.role === 'tecnico' ? 'selected' : ''}>Técnico</option>
+                            <option value="cliente" ${u.role === 'cliente' ? 'selected' : ''}>Cliente</option>
+                        </select>
+                    </td>
+                    <td style="padding:8px; display:flex; gap:5px;">
+                        <button class="btn-secondary" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.resetPassword('${u.id}')">🔑 Clave</button>
+                        <button class="btn-danger" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.deleteUser('${u.id}')">🗑️ Eliminar</button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            tbody.innerHTML = `<tr><td colspan="3" style="color:red">Error: ${e.message}</td></tr>`;
+        }
+    }
+
+    async updateRole(userId, newRole) {
+        try {
+            const { error } = await supabaseClient.from('user_profiles').update({ role: newRole }).eq('id', userId);
+            if (error) throw error;
+            // alert('Rol actualizado');
+        } catch (e) {
+            alert('Error actualizando rol: ' + e.message);
+        }
+    }
+
+    async deleteUser(userId) {
+        if (!confirm("¿Estás seguro de eliminar este usuario? Perderá acceso a los proyectos.")) return;
+        try {
+            const { error } = await supabaseClient.from('user_profiles').delete().eq('id', userId);
+            if (error) throw error;
+            this.refreshUsers();
+        } catch (e) {
+            alert('Error eliminando usuario: ' + e.message);
+        }
+    }
+
+    async refreshProjects() {
+        const list = document.getElementById('admin-project-list');
+        list.innerHTML = 'Cargando...';
+
+        try {
+            const { data: projects, error } = await supabaseClient.from('projects').select('*').order('created_at', { ascending: false });
+            if (error) throw error;
+
+            list.innerHTML = '';
+
+            for (const p of projects) {
+                const div = document.createElement('div');
+                div.style.border = '1px solid #ccc';
+                div.style.padding = '10px';
+                div.style.marginBottom = '10px';
+                div.style.borderRadius = '4px';
+
+                // Fetch assignments count?
+                // const { count } = await supabaseClient.from('project_assignments').select('*', { count: 'exact', head: true }).eq('project_id', p.id);
+
+                div.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong>${p.name}</strong>
+                        <div>
+                             <button class="btn-secondary" style="font-size:11px; padding:3px;" onclick="window.adminManager.manageProjectUsers('${p.id}', '${p.name}')">Gestionar Usuarios</button>
+                             <button class="btn-danger" style="font-size:11px; padding:3px;" onclick="window.adminManager.deleteProject('${p.id}')">Eliminar</button>
+                        </div>
+                    </div>
+                    <small>${p.description || 'Sin descripción'}</small>
+                 `;
+                list.appendChild(div);
+            }
+        } catch (e) {
+            list.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+        }
+    }
+
+    async deleteProject(projectId) {
+        if (!confirm("ADVERTENCIA: ¿Eliminar proyecto? Esto borrará TODOS los nodos y conexiones asociados. No se puede deshacer.")) return;
+        try {
+            // Delete project (cascade should handle nodes/connections if well defined, but our script said ON DELETE CASCADE only for assignments and maybe others? 
+            // In `start.py` we didn't define FK for nodes->projects explicitly in the Add Column step, so we might need manual cleanup or rely on logic.
+            // Wait, `nodes` table add column didn't add REFERENCES. So we must delete manually or update schema.
+            // Manual deletion is safer for now.
+
+            await supabaseClient.from('nodes').delete().eq('project_id', projectId);
+            await supabaseClient.from('connections').delete().eq('project_id', projectId);
+            await supabaseClient.from('projects').delete().eq('id', projectId);
+
+            this.refreshProjects();
+        } catch (e) {
+            alert("Error eliminando proyecto: " + e.message);
+        }
+    }
+
+    async manageProjectUsers(projectId, projectName) {
+        const email = prompt(`Ingrese el email del usuario para asignar al proyecto "${projectName}":\n(Deje vacío para cancelar)`);
+        if (!email) return;
+
+        // Find user by email
+        try {
+            const { data, error } = await supabaseClient.from('user_profiles').select('id').eq('email', email).single();
+            if (error || !data) {
+                alert("Usuario no encontrado (debe haberse registrado primero).");
+                return;
+            }
+
+            // Assign
+            const { error: assignError } = await supabaseClient.from('project_assignments').insert({
+                project_id: projectId,
+                user_id: data.id,
+                assigned_by: (await supabaseClient.auth.getUser()).data.user.id
+            });
+
+            if (assignError) {
+                if (assignError.code === '23505') alert("El usuario ya está asignado a este proyecto.");
+                else throw assignError;
+            } else {
+                alert("Usuario asignado exitosamente.");
+            }
+
+        } catch (e) {
+            alert("Error: " + e.message);
+        }
+    }
+}
+
 class InventoryManager {
     constructor() {
         this.nodes = [];
         this.connections = [];
+        this.projectId = null;
     }
 
-    async init() {
+    async init(projectId) {
         if (typeof supabaseClient === 'undefined' || supabaseClient === null) {
             console.error('Supabase SDK not loaded or initialized');
             alert('Error crítico: No se pudo conectar con la base de datos. Por favor recarga la página.');
@@ -288,12 +835,22 @@ class InventoryManager {
         }
 
         try {
-            console.log('Loading data from Supabase...');
-            const { data: nodes, error: nodeError } = await supabaseClient.from('nodes').select('*');
+            console.log(`Loading data from Supabase for Project ${projectId}...`);
+            this.projectId = projectId;
+
+            const { data: nodes, error: nodeError } = await supabaseClient
+                .from('nodes')
+                .select('*')
+                .eq('project_id', projectId);
+
             if (nodeError) throw nodeError;
             this.nodes = nodes || [];
 
-            const { data: connections, error: connError } = await supabaseClient.from('connections').select('*');
+            const { data: connections, error: connError } = await supabaseClient
+                .from('connections')
+                .select('*')
+                .eq('project_id', projectId);
+
             if (connError) throw connError;
             this.connections = connections || [];
 
@@ -391,7 +948,10 @@ class InventoryManager {
                 rack: node.rack || [],
                 splitters: node.splitters || [],
                 clientData: node.clientData || null,
-                damageReports: node.damageReports || []
+                splitters: node.splitters || [],
+                clientData: node.clientData || null,
+                damageReports: node.damageReports || [],
+                project_id: this.projectId
             };
 
             const { error } = await supabaseClient.from('nodes').insert(nodeData);
@@ -490,7 +1050,8 @@ class InventoryManager {
             fibers: fibers,
             fromPort: fromPort || null, // { equipId, portId } for RACK nodes
             toPort: toPort || null,      // { equipId, portId } for RACK nodes
-            fiberDetails: this.initializeFiberDetails(parseInt(fibers)) // Initialize fiber array
+            fiberDetails: this.initializeFiberDetails(parseInt(fibers)), // Initialize fiber array
+            project_id: this.projectId
         };
 
         // Optimistic update
@@ -991,14 +1552,45 @@ class UIManager {
         this.fusionState = {
             nodeId: null,
             selectedFiberA: null, // { connId, fiberNumber }
-            selectedFiberB: null  // { connId, fiberNumber }
+            selectedFiberB: null
         };
     }
 
     async init() {
+        // Wait for User Manager to load project
+        // Logic moved to loadProject
         this.setupEventListeners();
-        await this.inventoryManager.init();
+    }
+
+    async loadProject(projectId, userRole) {
+        this.userRole = userRole; // Store role for UI permissions
+        await this.inventoryManager.init(projectId);
         this.loadExistingData();
+
+        // Apply Role Restrictions
+        if (this.userRole === 'tecnico' || this.userRole === 'cliente') {
+            // Hide "Add Node" button
+            document.getElementById('view-add-node').classList.add('hidden'); // This is the form
+            // Hide quick action
+            const btnAdd = document.getElementById('btn-add-node');
+            if (btnAdd) btnAdd.style.display = 'none';
+
+            // Hide Destructive/Edit Actions
+            const elementsToHide = [
+                'btn-delete-node',
+                'btn-delete-connection',
+                'btn-edit-connection',
+                'btn-add-equipment',
+                'btn-add-splitter',
+                'btn-manage-fusions',
+                'btn-manage-fusions-rack'
+            ];
+
+            elementsToHide.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.style.display = 'none';
+            });
+        }
     }
 
     switchView(viewName) {
@@ -3314,10 +3906,12 @@ class UIManager {
                 </div>
             `;
 
-            // Only allow selection if NOT connected to splitter/equipment (consumed)
-            // OR if it is a fusion (so we can disconnect it)
-            // OR if it is free/generic
-            const isSelectable = !isSplitter && !isEquip;
+            // Allow selection if:
+            // - Free/generic (not connected)
+            // - Connected via fusion (connectionId) - can be broken
+            // - Connected to ODF (equipId) - can be broken
+            // BUT NOT if connected to splitter (splitterId) - these are consumed
+            const isSelectable = !isSplitter;
 
             if (isSelectable) {
                 item.onclick = () => {
@@ -3503,50 +4097,125 @@ class UIManager {
     }
 
     async fusionDisconnect() {
-        const { selectedFiberA, selectedFiberB, nodeId } = this.fusionState;
+        const { selectedFiberA, selectedFiberB, nodeId, isRack } = this.fusionState;
 
-        const disconnectFiber = async (selection) => {
-            if (!selection || !selection.isConnected) return;
+        if (isRack) {
+            // ODF mode: disconnect ODF port from fiber
+            await this.disconnectODFFromFiber();
+        } else {
+            // Normal mode: disconnect fiber from fiber
+            const disconnectFiber = async (selection) => {
+                if (!selection || !selection.isConnected) return;
 
-            const conn = this.inventoryManager.getConnections().find(c => c.id === selection.connId);
-            const fiber = conn.fiberDetails.find(f => f.number === selection.fiberNumber);
-            const isFromNode = conn.from === nodeId;
+                const conn = this.inventoryManager.getConnections().find(c => c.id === selection.connId);
+                const fiber = conn.fiberDetails.find(f => f.number === selection.fiberNumber);
+                const isFromNode = conn.from === nodeId;
 
-            const termination = isFromNode ? fiber.fromTermination : fiber.toTermination;
+                const termination = isFromNode ? fiber.fromTermination : fiber.toTermination;
 
-            // Check if it's a fusion (has connectionId)
-            if (termination && termination.connectionId) {
-                // We also need to clear the OTHER side of the fusion
-                const otherConn = this.inventoryManager.getConnections().find(c => c.id === termination.connectionId);
-                if (otherConn) {
-                    const otherFiber = otherConn.fiberDetails.find(f => f.number === termination.fiberNumber);
-                    if (otherFiber) {
-                        // Find which slot points back to us
-                        // It should be the slot at this nodeId
-                        // But wait, otherFiber might be connected to nodeId at 'from' or 'to'
-                        if (otherFiber.fromTermination && otherFiber.fromTermination.nodeId === nodeId) {
-                            otherFiber.fromTermination = null;
-                        } else if (otherFiber.toTermination && otherFiber.toTermination.nodeId === nodeId) {
-                            otherFiber.toTermination = null;
+                // Check if it's a fusion (has connectionId)
+                if (termination && termination.connectionId) {
+                    // We also need to clear the OTHER side of the fusion
+                    const otherConn = this.inventoryManager.getConnections().find(c => c.id === termination.connectionId);
+                    if (otherConn) {
+                        const otherFiber = otherConn.fiberDetails.find(f => f.number === termination.fiberNumber);
+                        if (otherFiber) {
+                            // Find which slot points back to us
+                            if (otherFiber.fromTermination && otherFiber.fromTermination.nodeId === nodeId) {
+                                otherFiber.fromTermination = null;
+                            } else if (otherFiber.toTermination && otherFiber.toTermination.nodeId === nodeId) {
+                                otherFiber.toTermination = null;
+                            }
+                            await this.inventoryManager.updateConnection(otherConn);
                         }
-                        await this.inventoryManager.updateConnection(otherConn);
+                    }
+
+                    // Clear this side
+                    if (isFromNode) fiber.fromTermination = null;
+                    else fiber.toTermination = null;
+
+                    await this.inventoryManager.updateConnection(conn);
+                } else {
+                    alert('Este hilo no está fusionado con otro cable (puede estar conectado a un equipo o splitter). Usa las otras herramientas para desconectarlo.');
+                }
+            };
+
+            if (selectedFiberA) await disconnectFiber(selectedFiberA);
+            if (selectedFiberB && (!selectedFiberA || selectedFiberA.connId !== selectedFiberB.connId || selectedFiberA.fiberNumber !== selectedFiberB.fiberNumber)) {
+                await disconnectFiber(selectedFiberB);
+            }
+
+            // Refresh lists
+            this.handleFusionCableChange('A');
+            this.handleFusionCableChange('B');
+            this.updateFusionButtons();
+        }
+    }
+
+    async disconnectODFFromFiber() {
+        const { selectedFiberA, selectedFiberB, nodeId, selectedODFEquipId } = this.fusionState;
+
+        // Can disconnect from either side
+        if (selectedFiberA && selectedFiberA.equipId) {
+            // Disconnecting from ODF port side
+            const node = this.inventoryManager.getNode(nodeId);
+            const equipment = (node.rack || []).find(eq => eq.id === selectedFiberA.equipId);
+
+            if (equipment && equipment.portData) {
+                const port = equipment.portData.find(p => p.id === selectedFiberA.portId);
+                if (port && port.fiberConnection) {
+                    // Clear the fiber side
+                    const conn = this.inventoryManager.getConnections().find(c => c.id === port.fiberConnection.connectionId);
+                    if (conn) {
+                        const fiber = conn.fiberDetails.find(f => f.number === port.fiberConnection.fiberNumber);
+                        if (fiber) {
+                            const isFromNode = conn.from === nodeId;
+                            if (isFromNode) fiber.fromTermination = null;
+                            else fiber.toTermination = null;
+                            await this.inventoryManager.updateConnection(conn);
+                        }
+                    }
+
+                    // Clear ODF port
+                    port.fiberConnection = null;
+                    port.connected = false;
+                    await this.inventoryManager.updateNode(node);
+                }
+            }
+        }
+
+        if (selectedFiberB && selectedFiberB.isConnected) {
+            // Disconnecting from fiber side
+            const conn = this.inventoryManager.getConnections().find(c => c.id === selectedFiberB.connId);
+            if (conn) {
+                const fiber = conn.fiberDetails.find(f => f.number === selectedFiberB.fiberNumber);
+                if (fiber) {
+                    const isFromNode = conn.from === nodeId;
+                    const termination = isFromNode ? fiber.fromTermination : fiber.toTermination;
+
+                    if (termination && termination.equipId) {
+                        // Clear ODF port
+                        const node = this.inventoryManager.getNode(nodeId);
+                        const equipment = (node.rack || []).find(eq => eq.id === termination.equipId);
+                        if (equipment && equipment.portData) {
+                            const port = equipment.portData.find(p => p.id === termination.portId);
+                            if (port) {
+                                port.fiberConnection = null;
+                                port.connected = false;
+                                await this.inventoryManager.updateNode(node);
+                            }
+                        }
+
+                        // Clear fiber
+                        if (isFromNode) fiber.fromTermination = null;
+                        else fiber.toTermination = null;
+                        await this.inventoryManager.updateConnection(conn);
                     }
                 }
-
-                // Clear this side
-                if (isFromNode) fiber.fromTermination = null;
-                else fiber.toTermination = null;
-
-                await this.inventoryManager.updateConnection(conn);
-            } else {
-                alert('Este hilo no está fusionado con otro cable (puede estar conectado a un equipo o splitter). Usa las otras herramientas para desconectarlo.');
             }
-        };
-
-        if (selectedFiberA) await disconnectFiber(selectedFiberA);
-        if (selectedFiberB && (!selectedFiberA || selectedFiberA.connId !== selectedFiberB.connId || selectedFiberA.fiberNumber !== selectedFiberB.fiberNumber)) {
-            await disconnectFiber(selectedFiberB);
         }
+
+        alert('Conexión ODF-Fibra eliminada con éxito.');
 
         // Refresh lists
         this.handleFusionCableChange('A');
@@ -3625,8 +4294,17 @@ document.addEventListener('DOMContentLoaded', () => {
     const uiManager = new UIManager(mapManager, inventoryManager);
     uiManager.init();
 
+    // Initialize User Manager
+    const userManager = new UserManager(uiManager);
+    userManager.init();
+
+    // Initialize Admin Manager
+    const adminManager = new AdminManager();
+    window.adminManager = adminManager;
+
     // Expose for debugging/testing
     window.mapManager = mapManager;
     window.inventoryManager = inventoryManager;
     window.uiManager = uiManager;
+    window.userManager = userManager;
 });
