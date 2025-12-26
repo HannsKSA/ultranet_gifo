@@ -91,10 +91,19 @@ class MapManager {
             }
         }
 
-        let iconHtml = `<div style="position:relative;"><div style="background-color: ${iconColor}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5);"></div>${warningIcon}${internetIcon}</div>`;
+        // Check for unresolved damage reports
+        let damageAlertIcon = '';
+        if (node.damageReports && node.damageReports.length > 0) {
+            const hasUnresolvedReports = node.damageReports.some(r => !r.resolved);
+            if (hasUnresolvedReports) {
+                damageAlertIcon = '<div class="damage-alert-icon" title="Reportes de Daño Pendientes">🔴</div>';
+            }
+        }
+
+        let iconHtml = `<div style="position:relative;">${damageAlertIcon}<div style="background-color: ${iconColor}; width: 14px; height: 14px; border-radius: 50%; border: 2px solid white; box-shadow: 0 0 3px rgba(0,0,0,0.5);"></div>${warningIcon}${internetIcon}</div>`;
 
         if (node.type === 'ONU') {
-            iconHtml = `<div style="position:relative;"><div style="background-color: ${iconColor}; width: 12px; height: 12px; border-radius: 2px; border: 1px solid white;">🏠</div>${warningIcon}${internetIcon}</div>`;
+            iconHtml = `<div style="position:relative;">${damageAlertIcon}<div style="background-color: ${iconColor}; width: 12px; height: 12px; border-radius: 2px; border: 1px solid white;">🏠</div>${warningIcon}${internetIcon}</div>`;
         }
 
         const marker = L.marker([node.lat, node.lng], {
@@ -1356,8 +1365,17 @@ class UIManager {
             rack: document.getElementById('view-rack-details'),
             ports: document.getElementById('view-port-management'),
             connection: document.getElementById('view-connection-details'),
-            splitter: document.getElementById('view-splitter-management')
+            splitter: document.getElementById('view-splitter-management'),
+            reports: document.getElementById('view-reports')
         };
+
+        // Main content elements
+        this.mapContainer = document.getElementById('map');
+        this.fullReportsView = document.getElementById('full-reports-view');
+
+        // Reports filter state
+        this.currentReportsFilter = 'all'; // 'all', 'pending', 'resolved'
+        this.currentMainReportsFilter = 'all';
 
         this.connectionDetails = {
             title: document.getElementById('connection-detail-title'),
@@ -2766,6 +2784,9 @@ class UIManager {
         // Update node in database
         await this.inventoryManager.updateNode(node);
 
+        // Refresh the marker to show the alert icon immediately
+        this.mapManager.addMarker(node);
+
         // Calculate downstream impact
         const impact = this.inventoryManager.getDownstreamImpact(this.currentNodeId);
 
@@ -2824,8 +2845,16 @@ class UIManager {
         // Update node in database
         await this.inventoryManager.updateNode(node);
 
+        // Refresh the marker to update the alert icon immediately
+        this.mapManager.addMarker(node);
+
         // Refresh the view
         this.showNodeDetails(nodeId);
+
+        // If reports panel is open, refresh it too
+        if (this.views.reports && !this.views.reports.classList.contains('hidden')) {
+            this.renderAllReports();
+        }
 
         alert(`Reporte marcado como resuelto.\nTiempo de resolución: ${report.resolutionTime}`);
     }
@@ -2917,14 +2946,19 @@ class UIManager {
         // Show damage reports
         let damageReportsHtml = '';
         if (node.damageReports && node.damageReports.length > 0) {
-            // Separate pending and resolved reports
-            const pendingReports = node.damageReports.filter(r => !r.resolved);
-            const resolvedReports = node.damageReports.filter(r => r.resolved);
+            // Sort all reports by timestamp (newest first)
+            const sortedReports = [...node.damageReports].sort((a, b) =>
+                new Date(b.reportedAt || b.timestamp) - new Date(a.reportedAt || a.timestamp)
+            );
 
-            // Combine: show pending first, then resolved (max 3 total)
+            // Separate pending and resolved reports
+            const pendingReports = sortedReports.filter(r => !r.resolved);
+            const resolvedReports = sortedReports.filter(r => r.resolved);
+
+            // Combine: show pending first, then resolved (max 5 total)
             const reportsToShow = [
-                ...pendingReports.slice(0, 3),
-                ...resolvedReports.slice(0, Math.max(0, 3 - pendingReports.length))
+                ...pendingReports.slice(0, 5),
+                ...resolvedReports.slice(0, Math.max(0, 5 - pendingReports.length))
             ];
 
             if (reportsToShow.length > 0) {
@@ -2979,6 +3013,17 @@ class UIManager {
         }
 
         this.details.damageReportsSection.innerHTML = damageReportsHtml;
+
+        // Check if node has unresolved damage reports and maintain highlighting
+        const hasUnresolvedReports = node.damageReports && node.damageReports.some(r => !r.resolved);
+        if (hasUnresolvedReports) {
+            // Calculate and maintain downstream impact highlighting
+            const impact = this.inventoryManager.getDownstreamImpact(nodeId);
+            this.mapManager.highlightAffectedNetwork(
+                impact.nodes.map(n => n.id),
+                impact.connectionIds
+            );
+        }
 
         // Show/Hide Rack Button only for RACK type
         if (node.type === 'RACK') {
@@ -4246,6 +4291,9 @@ class UIManager {
                 console.error("Error loading connection:", conn, e);
             }
         });
+
+        // Setup navigation buttons
+        this.setupNavigationButtons();
     }
 
     refreshNodeList() {
@@ -4275,6 +4323,337 @@ class UIManager {
     }
 
 
+    setupNavigationButtons() {
+        const btnMap = document.getElementById('btn-map');
+        const btnInventory = document.getElementById('btn-inventory');
+        const btnReports = document.getElementById('btn-reports');
+
+        if (btnMap) {
+            btnMap.addEventListener('click', () => {
+                this.switchView('list');
+                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+                btnMap.classList.add('active');
+            });
+        }
+
+        if (btnInventory) {
+            btnInventory.addEventListener('click', () => {
+                this.switchView('list');
+                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+                btnInventory.classList.add('active');
+            });
+        }
+
+        if (btnReports) {
+            btnReports.addEventListener('click', () => {
+                this.showAllReports();
+                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+                btnReports.classList.add('active');
+            });
+        }
+
+        // Reports filter buttons
+        const filterAll = document.getElementById('filter-all');
+        const filterPending = document.getElementById('filter-pending');
+        const filterResolved = document.getElementById('filter-resolved');
+
+        if (filterAll) {
+            filterAll.addEventListener('click', () => {
+                this.currentReportsFilter = 'all';
+                this.updateFilterButtons('filter');
+                this.renderAllReports();
+            });
+        }
+
+        if (filterPending) {
+            filterPending.addEventListener('click', () => {
+                this.currentReportsFilter = 'pending';
+                this.updateFilterButtons('filter');
+                this.renderAllReports();
+            });
+        }
+
+        if (filterResolved) {
+            filterResolved.addEventListener('click', () => {
+                this.currentReportsFilter = 'resolved';
+                this.updateFilterButtons('filter');
+                this.renderAllReports();
+            });
+        }
+
+        // Full reports view button
+        const btnViewFullReports = document.getElementById('btn-view-full-reports');
+        if (btnViewFullReports) {
+            btnViewFullReports.addEventListener('click', () => {
+                this.showMainReportsView();
+            });
+        }
+
+        // Main reports filter buttons
+        const mainFilterAll = document.getElementById('main-filter-all');
+        const mainFilterPending = document.getElementById('main-filter-pending');
+        const mainFilterResolved = document.getElementById('main-filter-resolved');
+
+        if (mainFilterAll) {
+            mainFilterAll.addEventListener('click', () => {
+                this.currentMainReportsFilter = 'all';
+                this.updateFilterButtons('main-filter');
+                this.renderMainReports();
+            });
+        }
+
+        if (mainFilterPending) {
+            mainFilterPending.addEventListener('click', () => {
+                this.currentMainReportsFilter = 'pending';
+                this.updateFilterButtons('main-filter');
+                this.renderMainReports();
+            });
+        }
+
+        if (mainFilterResolved) {
+            mainFilterResolved.addEventListener('click', () => {
+                this.currentMainReportsFilter = 'resolved';
+                this.updateFilterButtons('main-filter');
+                this.renderMainReports();
+            });
+        }
+
+        // Close main reports view
+        const btnCloseMainReports = document.getElementById('btn-close-full-reports-main');
+        if (btnCloseMainReports) {
+            btnCloseMainReports.addEventListener('click', () => {
+                this.hideMainReportsView();
+            });
+        }
+    }
+
+    updateFilterButtons(prefix) {
+        const filter = prefix === 'filter' ? this.currentReportsFilter : this.currentMainReportsFilter;
+
+        ['all', 'pending', 'resolved'].forEach(type => {
+            const btn = document.getElementById(`${prefix}-${type}`);
+            if (btn) {
+                if (type === filter) {
+                    btn.classList.remove('btn-secondary');
+                    btn.classList.add('action-btn');
+                } else {
+                    btn.classList.remove('action-btn');
+                    btn.classList.add('btn-secondary');
+                }
+            }
+        });
+    }
+
+    showAllReports() {
+        this.switchView('reports');
+        this.currentReportsFilter = 'all';
+        this.updateFilterButtons('filter');
+        this.renderAllReports();
+    }
+
+    renderAllReports() {
+        const container = document.getElementById('all-reports-list');
+        const viewMoreContainer = document.getElementById('view-more-container');
+        const nodes = this.inventoryManager.getNodes();
+
+        // Collect all reports from all nodes
+        let allReports = [];
+        nodes.forEach(node => {
+            if (node.damageReports && node.damageReports.length > 0) {
+                node.damageReports.forEach(report => {
+                    allReports.push({
+                        ...report,
+                        nodeId: node.id,
+                        nodeName: node.name,
+                        nodeType: node.type
+                    });
+                });
+            }
+        });
+
+        // Apply filter
+        if (this.currentReportsFilter === 'pending') {
+            allReports = allReports.filter(r => !r.resolved);
+        } else if (this.currentReportsFilter === 'resolved') {
+            allReports = allReports.filter(r => r.resolved);
+        }
+
+        // Sort by date (newest first)
+        allReports.sort((a, b) => new Date(b.reportedAt || b.timestamp) - new Date(a.reportedAt || a.timestamp));
+
+        if (allReports.length === 0) {
+            container.innerHTML = '<p class="empty-state">No hay reportes registrados.</p>';
+            if (viewMoreContainer) viewMoreContainer.classList.add('hidden');
+            return;
+        }
+
+        // Show only first 5 reports
+        const reportsToShow = allReports.slice(0, 5);
+        const hasMore = allReports.length > 5;
+
+        let html = '';
+        reportsToShow.forEach(report => {
+            const date = new Date(report.reportedAt || report.timestamp);
+            const dateStr = date.toLocaleString('es-ES', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            const statusClass = report.resolved ? 'resolved' : 'pending';
+            const statusText = report.resolved ? 'Resuelto' : 'Pendiente';
+
+            html += `
+                <div class="report-item ${statusClass}" onclick="window.uiManager.navigateToNode('${report.nodeId}')">
+                    <div class="report-header">
+                        <span class="report-node-name">${report.nodeName} (${report.nodeType})</span>
+                        <span class="report-status ${statusClass}">${statusText}</span>
+                    </div>
+                    <div class="report-description">${report.description}</div>
+                    <div class="report-date">📅 ${dateStr}</div>
+                    ${report.resolved ? `<div class="report-date" style="color: #28a745;">✓ Resuelto: ${new Date(report.resolvedAt).toLocaleString('es-ES', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>` : ''}
+                </div>
+            `;
+        });
+
+        container.innerHTML = html;
+
+        // Show/hide "View More" button
+        if (viewMoreContainer) {
+            if (hasMore) {
+                viewMoreContainer.classList.remove('hidden');
+            } else {
+                viewMoreContainer.classList.add('hidden');
+            }
+        }
+    }
+
+    showMainReportsView() {
+        // Hide map, show full reports view
+        if (this.mapContainer) this.mapContainer.classList.add('hidden');
+        if (this.fullReportsView) this.fullReportsView.classList.remove('hidden');
+
+        this.currentMainReportsFilter = 'all';
+        this.updateFilterButtons('main-filter');
+        this.renderMainReports();
+    }
+
+    hideMainReportsView() {
+        // Show map, hide full reports view
+        if (this.mapContainer) this.mapContainer.classList.remove('hidden');
+        if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
+    }
+
+    renderMainReports() {
+        const container = document.getElementById('main-reports-list');
+        const statsContainer = document.getElementById('main-reports-stats');
+        const nodes = this.inventoryManager.getNodes();
+
+        // Collect all reports from all nodes
+        let allReports = [];
+        nodes.forEach(node => {
+            if (node.damageReports && node.damageReports.length > 0) {
+                node.damageReports.forEach(report => {
+                    allReports.push({
+                        ...report,
+                        nodeId: node.id,
+                        nodeName: node.name,
+                        nodeType: node.type
+                    });
+                });
+            }
+        });
+
+        // Calculate stats before filtering
+        const totalReports = allReports.length;
+        const pendingReports = allReports.filter(r => !r.resolved).length;
+        const resolvedReports = allReports.filter(r => r.resolved).length;
+
+        // Apply filter
+        if (this.currentMainReportsFilter === 'pending') {
+            allReports = allReports.filter(r => !r.resolved);
+        } else if (this.currentMainReportsFilter === 'resolved') {
+            allReports = allReports.filter(r => r.resolved);
+        }
+
+        // Sort by date (newest first)
+        allReports.sort((a, b) => new Date(b.reportedAt || b.timestamp) - new Date(a.reportedAt || a.timestamp));
+
+        // Render stats
+        if (statsContainer) {
+            statsContainer.innerHTML = `
+                <div style="display: flex; justify-content: space-around; text-align: center;">
+                    <div>
+                        <div style="font-size: 20px; font-weight: bold; color: #800020;">${totalReports}</div>
+                        <div style="color: #666;">Total</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 20px; font-weight: bold; color: #dc3545;">${pendingReports}</div>
+                        <div style="color: #666;">Pendientes</div>
+                    </div>
+                    <div>
+                        <div style="font-size: 20px; font-weight: bold; color: #28a745;">${resolvedReports}</div>
+                        <div style="color: #666;">Resueltas</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        if (allReports.length === 0) {
+            container.innerHTML = '<p class="empty-state">No hay reportes en esta categoría.</p>';
+            return;
+        }
+
+        // Render all reports (no limit)
+        let html = '';
+        allReports.forEach(report => {
+            const date = new Date(report.reportedAt || report.timestamp);
+            const dateStr = date.toLocaleString('es-ES', {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit'
+            });
+
+            const statusClass = report.resolved ? 'resolved' : 'pending';
+            const statusText = report.resolved ? 'Resuelto' : 'Pendiente';
+
+            html += `
+                <div class="report-item ${statusClass}" onclick="window.uiManager.navigateToNode('${report.nodeId}')">
+                    <div class="report-header">
+                        <span class="report-node-name">${report.nodeName} (${report.nodeType})</span>
+                        <span class="report-status ${statusClass}">${statusText}</span>
+                    </div>
+                    <div class="report-description">${report.description}</div>
+                    <div class="report-date">📅 ${dateStr}</div>
+                    ${report.resolved ? `<div class="report-date" style="color: #28a745;">✓ Resuelto: ${new Date(report.resolvedAt).toLocaleString('es-ES', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} - ${report.resolutionTime || 'N/A'}</div>` : ''}
+                </div>
+            `;
+        });
+
+        container.innerHTML = html;
+    }
+
+    navigateToNode(nodeId) {
+        this.showNodeDetails(nodeId);
+        const node = this.inventoryManager.getNode(nodeId);
+        if (node) {
+            this.mapManager.map.setView([node.lat, node.lng], 16);
+        }
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+        const btnMap = document.getElementById('btn-map');
+        if (btnMap) btnMap.classList.add('active');
+    }
+
+    navigateToNodeFromReports(nodeId) {
+        // Close reports view and return to map
+        this.hideMainReportsView();
+        // Navigate to node
+        this.navigateToNode(nodeId);
+    }
 
     resetForm() {
         this.form.form.reset();
