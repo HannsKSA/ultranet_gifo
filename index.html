@@ -35,9 +35,9 @@
                 <button class="nav-btn" id="btn-inventory">
                     <span class="icon">📦</span> Inventario
                 </button>
-                <!-- <button class="nav-btn" id="btn-reports">
+                <button class="nav-btn" id="btn-reports">
                     <span class="icon">⚠️</span> Reportes
-                </button>-->
+                </button>
 
             </nav>
 
@@ -53,6 +53,28 @@
                     <div class="node-list" id="node-list-container">
                         <!-- List of nodes will go here -->
                         <p class="empty-state">No hay nodos registrados.</p>
+                    </div>
+                </div>
+
+                <!-- Reports View -->
+                <div id="view-reports" class="sidebar-pane hidden">
+                    <div class="sidebar-actions">
+                        <h3>Reportes de Daños</h3>
+                        <div style="display: flex; gap: 5px; margin-top: 10px;">
+                            <button class="btn-secondary" id="filter-all"
+                                style="flex: 1; font-size: 11px; padding: 6px;">Todas</button>
+                            <button class="btn-secondary" id="filter-pending"
+                                style="flex: 1; font-size: 11px; padding: 6px;">Pendientes</button>
+                            <button class="btn-secondary" id="filter-resolved"
+                                style="flex: 1; font-size: 11px; padding: 6px;">Resueltas</button>
+                        </div>
+                    </div>
+                    <div id="all-reports-list" style="flex: 1; overflow-y: auto;">
+                        <p class="empty-state">No hay reportes registrados.</p>
+                    </div>
+                    <div id="view-more-container" class="hidden" style="padding: 10px; border-top: 1px solid #e0e0e0;">
+                        <button class="action-btn" id="btn-view-full-reports" style="width: 100%; font-size: 12px;">Ver
+                            Todos los Reportes</button>
                     </div>
                 </div>
 
@@ -273,7 +295,46 @@
             </header>
 
             <div id="map" class="map-container"></div>
-        </main>
+
+            <!-- Full Reports Management View -->
+            <div id="full-reports-view" class="hidden"
+                style="flex: 1; display: flex; flex-direction: column; padding: 20px; background: #f4f4f4; overflow-y: auto;">
+                <div style="max-width: 1200px; width: 100%; margin: 0 auto;">
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <div>
+                            <h2 style="margin: 0; color: #800020;">Gestión de Reportes de Daños</h2>
+                            <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">Vista administrativa completa
+                            </p>
+                        </div>
+                        <button class="btn-secondary" id="btn-close-full-reports-main" style="padding: 10px 20px;">
+                            ← Volver al Mapa
+                        </button>
+                    </div>
+
+                    <!-- Filter Buttons -->
+                    <div style="display: flex; gap: 10px; margin-bottom: 20px;">
+                        <button class="btn-secondary" id="main-filter-all"
+                            style="flex: 1; padding: 12px; font-size: 14px;">Todas</button>
+                        <button class="btn-secondary" id="main-filter-pending"
+                            style="flex: 1; padding: 12px; font-size: 14px;">Pendientes</button>
+                        <button class="btn-secondary" id="main-filter-resolved"
+                            style="flex: 1; padding: 12px; font-size: 14px;">Resueltas</button>
+                    </div>
+
+                    <!-- Statistics -->
+                    <div id="main-reports-stats"
+                        style="padding: 20px; background: white; border-radius: 8px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <!-- Stats will be injected here -->
+                    </div>
+
+                    <!-- Reports List -->
+                    <div id="main-reports-list"
+                        style="background: white; border-radius: 8px; padding: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                        <p class="empty-state">No hay reportes registrados.</p>
+                    </div>
+                </div>
+            </div>
         </main>
 
         <!-- Modals -->
