@@ -1,6 +1,10 @@
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
+    const authHeader = req.headers['authorization'];
+    if (process.env.CRON_SECRET && authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
+        return res.status(401).json({ success: false, message: 'Unauthorized' });
+    }
     // Vercel Cron jobs send a specific header for security
     // But for now, we'll keep it simple or check for the secret if you want
 
