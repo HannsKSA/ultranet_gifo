@@ -1572,6 +1572,19 @@ class UIManager {
             selectedFiberA: null, // { connId, fiberNumber }
             selectedFiberB: null
         };
+
+        // Inventory UI
+        this.fullInventoryView = document.getElementById('full-inventory-view');
+        this.inventoryUI = {
+            stats: document.getElementById('inventory-stats'),
+            search: document.getElementById('inventory-search'),
+            container: document.getElementById('inventory-container'),
+            btnGrid: document.getElementById('btn-inventory-grid'),
+            btnList: document.getElementById('btn-inventory-list'),
+            btnClose: document.getElementById('btn-close-inventory-main')
+        };
+        this.inventoryDisplayMode = 'grid'; // 'grid' or 'list'
+        this.inventorySearchQuery = '';
     }
 
     async init() {
@@ -4338,7 +4351,7 @@ class UIManager {
 
         if (btnInventory) {
             btnInventory.addEventListener('click', () => {
-                this.switchView('list');
+                this.showMainInventoryView();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnInventory.classList.add('active');
             });
@@ -4349,6 +4362,40 @@ class UIManager {
                 this.showAllReports();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnReports.classList.add('active');
+            });
+        }
+
+        // Inventory view listeners
+        if (this.inventoryUI.btnGrid) {
+            this.inventoryUI.btnGrid.addEventListener('click', () => {
+                this.inventoryDisplayMode = 'grid';
+                this.inventoryUI.btnGrid.classList.add('active');
+                this.inventoryUI.btnList.classList.remove('active');
+                this.inventoryUI.container.className = 'grid-view';
+                this.renderInventory();
+            });
+        }
+
+        if (this.inventoryUI.btnList) {
+            this.inventoryUI.btnList.addEventListener('click', () => {
+                this.inventoryDisplayMode = 'list';
+                this.inventoryUI.btnList.classList.add('active');
+                this.inventoryUI.btnGrid.classList.remove('active');
+                this.inventoryUI.container.className = 'list-view';
+                this.renderInventory();
+            });
+        }
+
+        if (this.inventoryUI.search) {
+            this.inventoryUI.search.addEventListener('input', (e) => {
+                this.inventorySearchQuery = e.target.value.toLowerCase();
+                this.renderInventory();
+            });
+        }
+
+        if (this.inventoryUI.btnClose) {
+            this.inventoryUI.btnClose.addEventListener('click', () => {
+                this.hideMainInventoryView();
             });
         }
 
@@ -4637,6 +4684,131 @@ class UIManager {
         container.innerHTML = html;
     }
 
+    showMainInventoryView() {
+        // Hide map and other views, show inventory
+        if (this.mapContainer) this.mapContainer.classList.add('hidden');
+        if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
+        if (this.fullInventoryView) this.fullInventoryView.classList.remove('hidden');
+
+        this.renderInventory();
+    }
+
+    hideMainInventoryView() {
+        if (this.mapContainer) this.mapContainer.classList.remove('hidden');
+        if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
+
+        // Restore map button as active
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+        const btnMap = document.getElementById('btn-map');
+        if (btnMap) btnMap.classList.add('active');
+        this.switchView('list');
+    }
+
+    renderInventory() {
+        const nodes = this.inventoryManager.getNodes();
+        const connections = this.inventoryManager.getConnections();
+
+        // Calculate Totals
+        const stats = {
+            ONU: nodes.filter(n => n.type === 'ONU').length,
+            NAP: nodes.filter(n => n.type === 'NAP').length,
+            FIBER: connections.length,
+            TOTAL_NODES: nodes.length
+        };
+
+        // Render Stats
+        if (this.inventoryUI.stats) {
+            this.inventoryUI.stats.innerHTML = `
+                <div class="stat-card">
+                    <span class="value">${stats.TOTAL_NODES}</span>
+                    <span class="label">Total Equipos</span>
+                </div>
+                <div class="stat-card">
+                    <span class="value" style="color: #2ecc71;">${stats.ONU}</span>
+                    <span class="label">ONUs / Clientes</span>
+                </div>
+                <div class="stat-card">
+                    <span class="value" style="color: #3498db;">${stats.NAP}</span>
+                    <span class="label">Cajas NAP</span>
+                </div>
+                <div class="stat-card">
+                    <span class="value" style="color: #e67e22;">${stats.FIBER}</span>
+                    <span class="label">Cables / Tramos</span>
+                </div>
+            `;
+        }
+
+        // Filter items based on search
+        const filteredNodes = nodes.filter(n =>
+            n.name.toLowerCase().includes(this.inventorySearchQuery) ||
+            n.type.toLowerCase().includes(this.inventorySearchQuery)
+        );
+
+        const container = this.inventoryUI.container;
+        if (!container) return;
+
+        if (filteredNodes.length === 0) {
+            container.innerHTML = '<p class="empty-state">No se encontraron elementos.</p>';
+            return;
+        }
+
+        container.innerHTML = '';
+
+        filteredNodes.forEach(node => {
+            if (this.inventoryDisplayMode === 'grid') {
+                const card = document.createElement('div');
+                card.className = 'inventory-card';
+
+                let extraDetails = '';
+                if (node.type === 'ONU' && node.clientData) {
+                    extraDetails = `
+                        <p><strong>Plan:</strong> ${node.clientData.plan || 'N/A'}</p>
+                        <p><strong>Dirección:</strong> ${node.clientData.address || 'N/A'}</p>
+                    `;
+                } else if (node.type === 'RACK' && node.rack) {
+                    extraDetails = `<p><strong>Equipos:</strong> ${node.rack.length}</p>`;
+                }
+
+                const color = this.mapManager.getColorForType(node.type);
+
+                card.innerHTML = `
+                    <div class="inventory-card-header">
+                        <span class="inventory-card-title">${node.name}</span>
+                        <span class="inventory-card-type" style="background-color: ${color}">${node.type}</span>
+                    </div>
+                    <div class="inventory-card-details">
+                        ${extraDetails || '<p>Equipo de infraestructura de red.</p>'}
+                    </div>
+                    <div class="inventory-card-footer">
+                        <span>ID: ${node.id.substring(0, 8)}...</span>
+                        <span>📍 Ver en Mapa</span>
+                    </div>
+                `;
+                card.addEventListener('click', () => this.navigateToNodeFromInventory(node.id));
+                container.appendChild(card);
+            } else {
+                // List view
+                const item = document.createElement('div');
+                item.className = 'inventory-list-item';
+                const color = this.mapManager.getColorForType(node.type);
+
+                item.innerHTML = `
+                    <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${color}"></div>
+                    <span class="title"><strong>${node.name}</strong></span>
+                    <span style="font-size: 11px; color: #666; margin-right: 20px;">${node.type}</span>
+                    <span style="font-size: 12px; color: var(--primary-color);">Ver Detalles →</span>
+                `;
+                item.addEventListener('click', () => this.navigateToNodeFromInventory(node.id));
+                container.appendChild(item);
+            }
+        });
+    }
+
+    navigateToNodeFromInventory(nodeId) {
+        this.hideMainInventoryView();
+        this.navigateToNode(nodeId);
+    }
+
     navigateToNode(nodeId) {
         this.showNodeDetails(nodeId);
         const node = this.inventoryManager.getNode(nodeId);
@@ -4654,6 +4826,7 @@ class UIManager {
         // Navigate to node
         this.navigateToNode(nodeId);
     }
+
 
     resetForm() {
         this.form.form.reset();

@@ -335,6 +335,50 @@
                     </div>
                 </div>
             </div>
+
+            <!-- Full Inventory View -->
+            <div id="full-inventory-view" class="hidden"
+                style="flex: 1; display: flex; flex-direction: column; padding: 20px; background: #f4f4f4; overflow-y: auto;">
+                <div style="max-width: 1200px; width: 100%; margin: 0 auto;">
+                    <div
+                        style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                        <div>
+                            <h2 style="margin: 0; color: #004d40;">Inventario de Infraestructura</h2>
+                            <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">Resumen físico de la red</p>
+                        </div>
+                        <div style="display: flex; gap: 10px;">
+                            <div class="view-toggle"
+                                style="display: flex; background: #ddd; border-radius: 6px; padding: 2px;">
+                                <button id="btn-inventory-grid" class="btn-toggle active"
+                                    style="padding: 5px 12px; border: none; background: white; border-radius: 4px; cursor: pointer; font-size: 12px;">Bloques</button>
+                                <button id="btn-inventory-list" class="btn-toggle"
+                                    style="padding: 5px 12px; border: none; background: transparent; border-radius: 4px; cursor: pointer; font-size: 12px;">Lista</button>
+                            </div>
+                            <button class="btn-secondary" id="btn-close-inventory-main" style="padding: 10px 20px;">
+                                ← Volver al Mapa
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Stats Boxes -->
+                    <div id="inventory-stats"
+                        style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <!-- Stats injected here -->
+                    </div>
+
+                    <!-- Search/Filter -->
+                    <div style="margin-bottom: 20px;">
+                        <input type="text" id="inventory-search" placeholder="Buscar equipo o producto..."
+                            style="width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px;">
+                    </div>
+
+                    <!-- Inventory Container -->
+                    <div id="inventory-container" class="grid-view">
+                        <!-- Items injected here -->
+                        <p class="empty-state">Cargando inventario...</p>
+                    </div>
+                </div>
+            </div>
         </main>
 
         <!-- Modals -->
