@@ -7,5 +7,11 @@
             "source": "/api/:match*",
             "destination": "/api/:match*"
         }
+    ],
+    "crons": [
+        {
+            "path": "/api/keep_alive",
+            "schedule": "0 0 * * *"
+        }
     ]
 }
