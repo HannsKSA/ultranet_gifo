@@ -115,7 +115,6 @@ body {
 
 .sidebar-pane {
     padding: 20px;
-    height: 100%;
     display: none;
     flex-direction: column;
 }
@@ -646,7 +645,7 @@ body {
     background: white;
     border-radius: 10px;
     padding: 15px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
     border: 1px solid #eee;
     transition: transform 0.2s, box-shadow 0.2s;
     cursor: pointer;
@@ -656,8 +655,19 @@ body {
 
 .inventory-card:hover {
     transform: translateY(-3px);
-    box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+    box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
     border-color: var(--primary-light);
+}
+
+.category-card {
+    background: linear-gradient(145deg, #ffffff, #f0f0f0);
+    border-left: 5px solid var(--primary-color);
+}
+
+.back-btn {
+    margin-bottom: 15px;
+    font-weight: bold;
+    color: var(--primary-color);
 }
 
 .inventory-card-header {
@@ -743,7 +753,7 @@ body {
 
 .btn-toggle.active {
     background: white !important;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
     font-weight: 600;
     color: var(--primary-color);
 }

@@ -164,20 +164,23 @@ class MapManager {
     }
 
     getColorForType(type) {
-        switch (type) {
-            case 'OLT': return '#800020';
-            case 'NAP': return '#2ecc71';
-            case 'MUFLA': return '#3498db';
-            case 'ODF': return '#9b59b6';
-            case 'ONU': return '#e67e22'; // Orange for clients
-            default: return '#95a5a6';
+        if (window.uiManager && window.uiManager.customNodeTypes) {
+            const custom = window.uiManager.customNodeTypes.find(t => t.name === type);
+            if (custom) return custom.color;
         }
+        return '#95a5a6';
     }
 
     removeMarker(nodeId) {
         if (this.markers[nodeId]) {
             this.map.removeLayer(this.markers[nodeId]);
             delete this.markers[nodeId];
+        }
+    }
+
+    updateMarker(nodeId, latlng) {
+        if (this.markers[nodeId]) {
+            this.markers[nodeId].setLatLng(latlng);
         }
     }
 
@@ -554,6 +557,8 @@ class AdminManager {
         this.users = [];
         this.projects = [];
         this.modal = null;
+        this.newNodeType = null;
+        this.newCableType = null;
         this.initialized = false;
     }
 
@@ -567,20 +572,24 @@ class AdminManager {
     createAdminButton() {
         const nav = document.querySelector('.sidebar-nav');
         if (!nav) return;
-
         const btn = document.createElement('button');
         btn.className = 'nav-btn';
         btn.id = 'btn-admin-panel';
         btn.style.marginTop = '20px';
         btn.style.backgroundColor = '#2c3e50';
+        btn.style.color = 'white';
+        btn.style.transition = 'all 0.3s ease';
         btn.innerHTML = '<span class="icon">⚙️</span> Panel Admin';
         btn.onclick = () => this.openAdminPanel();
+
+        // Add hover effect
+        btn.onmouseover = () => btn.style.backgroundColor = '#3498db';
+        btn.onmouseout = () => btn.style.backgroundColor = '#2c3e50';
 
         nav.appendChild(btn);
     }
 
     createAdminModal() {
-        // Create Modal HTML dynamically
         const modalHtml = `
         <div id="modal-admin-panel" class="modal-overlay hidden" style="z-index: 2500;">
             <div class="modal-content" style="max-width: 800px; height: 80vh; display:flex; flex-direction:column;">
@@ -588,12 +597,12 @@ class AdminManager {
                     <h3>Panel de Super Admin</h3>
                     <button class="btn-secondary" onclick="document.getElementById('modal-admin-panel').classList.add('hidden')">Cerrar</button>
                 </div>
-                
                 <div style="display:flex; gap:10px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
                     <button class="action-btn" id="tab-users" onclick="window.adminManager.switchTab('users')">Usuarios</button>
                     <button class="btn-secondary" id="tab-projects" onclick="window.adminManager.switchTab('projects')">Proyectos</button>
+                    <button class="btn-secondary" id="tab-node-types" onclick="window.adminManager.switchTab('node-types')">Tipos de Nodo</button>
+                    <button class="btn-secondary" id="tab-cable-types" onclick="window.adminManager.switchTab('cable-types')">Tipos de Cable</button>
                 </div>
-
                 <div id="admin-content-users" style="flex:1; overflow-y:auto;">
                     <div style="display:flex; gap:10px; margin-bottom:10px;">
                         <button class="action-btn" style="padding:5px;" onclick="window.adminManager.refreshUsers()">🔄 Refrescar</button>
@@ -601,23 +610,31 @@ class AdminManager {
                     </div>
                     <table style="width:100%; font-size:13px; border-collapse: collapse;">
                         <thead style="background:#f5f5f5; text-align:left;">
-                            <tr>
-                                <th style="padding:8px;">Email</th>
-                                <th style="padding:8px;">Rol</th>
-                                <th style="padding:8px;">Acciones</th>
-                            </tr>
+                            <tr><th style="padding:8px;">Email</th><th style="padding:8px;">Rol</th><th style="padding:8px;">Acciones</th></tr>
                         </thead>
                         <tbody id="admin-user-list"></tbody>
                     </table>
                 </div>
-
                 <div id="admin-content-projects" class="hidden" style="flex:1; overflow-y:auto;">
                      <button class="action-btn" style="margin-bottom:10px; padding:5px;" onclick="window.adminManager.refreshProjects()">🔄 Refrescar Proyectos</button>
                      <div id="admin-project-list"></div>
                 </div>
+                <div id="admin-content-node-types" class="hidden" style="flex:1; overflow-y:auto;">
+                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <h4>Configuración de Tipos de Nodo</h4>
+                        <button class="action-btn" style="background-color:#2ecc71; padding:5px; width:auto;" onclick="window.adminManager.openCreateNodeTypeModal()">+ Nuevo Tipo</button>
+                     </div>
+                     <div id="admin-node-types-list"></div>
+                </div>
+                <div id="admin-content-cable-types" class="hidden" style="flex:1; overflow-y:auto;">
+                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <h4>Configuración de Tipos de Cable</h4>
+                        <button class="action-btn" style="background-color:#2ecc71; padding:5px; width:auto;" onclick="window.adminManager.openCreateCableTypeModal()">+ Nuevo Cable</button>
+                     </div>
+                     <div id="admin-cable-types-list"></div>
+                </div>
             </div>
-        </div>
-        `;
+        </div>`;
         document.body.insertAdjacentHTML('beforeend', modalHtml);
         this.modal = document.getElementById('modal-admin-panel');
     }
@@ -629,44 +646,29 @@ class AdminManager {
         if (!password) return;
         const role = prompt("Rol (super-admin, admin, tecnico, cliente):", "tecnico");
         if (!role) return;
-
         try {
             const resp = await fetch('/api/create_user', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ email, password, role, full_name: email.split('@')[0] })
             });
             const res = await resp.json();
-            if (res.success) {
-                alert("Usuario creado exitosamente.");
-                this.refreshUsers();
-            } else {
-                alert("Error: " + res.message);
-            }
-        } catch (e) {
-            alert("Error de conexión: " + e.message);
-        }
+            if (res.success) { alert("Usuario creado."); this.refreshUsers(); }
+            else alert("Error: " + res.message);
+        } catch (e) { alert("Error: " + e.message); }
     }
 
     async resetPassword(userId) {
-        const password = prompt("Ingrese la nueva contraseña:");
+        const password = prompt("Nueva contraseña:");
         if (!password) return;
-
         try {
             const resp = await fetch('/api/update_password', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ user_id: userId, new_password: password })
             });
             const res = await resp.json();
-            if (res.success) {
-                alert("Contraseña actualizada exitosamente.");
-            } else {
-                alert("Error: " + res.message);
-            }
-        } catch (e) {
-            alert("Error de conexión: " + e.message);
-        }
+            if (res.success) alert("Contraseña actualizada.");
+            else alert("Error: " + res.message);
+        } catch (e) { alert("Error: " + e.message); }
     }
 
     openAdminPanel() {
@@ -677,24 +679,25 @@ class AdminManager {
     switchTab(tab) {
         document.getElementById('admin-content-users').classList.add('hidden');
         document.getElementById('admin-content-projects').classList.add('hidden');
+        document.getElementById('admin-content-node-types').classList.add('hidden');
+        document.getElementById('admin-content-cable-types').classList.add('hidden');
         document.getElementById(`admin-content-${tab}`).classList.remove('hidden');
-
-        // Toggle btn styles
         document.getElementById('tab-users').className = tab === 'users' ? 'action-btn' : 'btn-secondary';
         document.getElementById('tab-projects').className = tab === 'projects' ? 'action-btn' : 'btn-secondary';
-
+        document.getElementById('tab-node-types').className = tab === 'node-types' ? 'action-btn' : 'btn-secondary';
+        document.getElementById('tab-cable-types').className = tab === 'cable-types' ? 'action-btn' : 'btn-secondary';
         if (tab === 'users') this.refreshUsers();
         if (tab === 'projects') this.refreshProjects();
+        if (tab === 'node-types') this.refreshNodeTypes();
+        if (tab === 'cable-types') this.refreshCableTypes();
     }
 
     async refreshUsers() {
         const tbody = document.getElementById('admin-user-list');
         tbody.innerHTML = '<tr><td colspan="3">Cargando...</td></tr>';
-
         try {
             const { data, error } = await supabaseClient.from('user_profiles').select('*').order('email');
             if (error) throw error;
-
             tbody.innerHTML = '';
             data.forEach(u => {
                 const tr = document.createElement('tr');
@@ -710,121 +713,385 @@ class AdminManager {
                         </select>
                     </td>
                     <td style="padding:8px; display:flex; gap:5px;">
-                        <button class="btn-secondary" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.resetPassword('${u.id}')">🔑 Clave</button>
-                        <button class="btn-danger" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.deleteUser('${u.id}')">🗑️ Eliminar</button>
-                    </td>
-                `;
+                        <button class="btn-secondary" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.resetPassword('${u.id}')">🔑</button>
+                        <button class="btn-danger" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.deleteUser('${u.id}')">🗑️</button>
+                    </td>`;
                 tbody.appendChild(tr);
             });
-        } catch (e) {
-            tbody.innerHTML = `<tr><td colspan="3" style="color:red">Error: ${e.message}</td></tr>`;
-        }
+        } catch (e) { tbody.innerHTML = `<tr><td colspan="3" style="color:red">Error: ${e.message}</td></tr>`; }
     }
 
     async updateRole(userId, newRole) {
         try {
             const { error } = await supabaseClient.from('user_profiles').update({ role: newRole }).eq('id', userId);
             if (error) throw error;
-            // alert('Rol actualizado');
-        } catch (e) {
-            alert('Error actualizando rol: ' + e.message);
-        }
+        } catch (e) { alert('Error: ' + e.message); }
     }
 
     async deleteUser(userId) {
-        if (!confirm("¿Estás seguro de eliminar este usuario? Perderá acceso a los proyectos.")) return;
-        try {
-            const { error } = await supabaseClient.from('user_profiles').delete().eq('id', userId);
-            if (error) throw error;
-            this.refreshUsers();
-        } catch (e) {
-            alert('Error eliminando usuario: ' + e.message);
-        }
+        if (!confirm("¿Eliminar usuario?")) return;
+        const { error } = await supabaseClient.from('user_profiles').delete().eq('id', userId);
+        if (error) alert(error.message); else this.refreshUsers();
     }
 
     async refreshProjects() {
         const list = document.getElementById('admin-project-list');
+        if (!list) return;
         list.innerHTML = 'Cargando...';
-
         try {
             const { data: projects, error } = await supabaseClient.from('projects').select('*').order('created_at', { ascending: false });
             if (error) throw error;
-
             list.innerHTML = '';
-
-            for (const p of projects) {
+            projects.forEach(p => {
                 const div = document.createElement('div');
-                div.style.border = '1px solid #ccc';
-                div.style.padding = '10px';
-                div.style.marginBottom = '10px';
-                div.style.borderRadius = '4px';
-
-                // Fetch assignments count?
-                // const { count } = await supabaseClient.from('project_assignments').select('*', { count: 'exact', head: true }).eq('project_id', p.id);
-
+                div.style.border = '1px solid #eee'; div.style.padding = '10px'; div.style.marginBottom = '10px';
+                div.style.borderRadius = '4px'; div.style.backgroundColor = '#fff';
                 div.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <strong>${p.name}</strong>
                         <div>
-                             <button class="btn-secondary" style="font-size:11px; padding:3px;" onclick="window.adminManager.manageProjectUsers('${p.id}', '${p.name}')">Gestionar Usuarios</button>
+                             <button class="btn-secondary" style="font-size:11px; padding:3px;" onclick="window.adminManager.manageProjectUsers('${p.id}', '${p.name}')">Usuarios</button>
                              <button class="btn-danger" style="font-size:11px; padding:3px;" onclick="window.adminManager.deleteProject('${p.id}')">Eliminar</button>
                         </div>
-                    </div>
-                    <small>${p.description || 'Sin descripción'}</small>
-                 `;
+                    </div>`;
                 list.appendChild(div);
+            });
+        } catch (e) { list.innerHTML = `<p style="color:red">Error: ${e.message}</p>`; }
+    }
+
+    async deleteProject(projectId) {
+        if (!confirm("¿Eliminar proyecto y sus datos?")) return;
+        try {
+            await supabaseClient.from('nodes').delete().eq('project_id', projectId);
+            await supabaseClient.from('connections').delete().eq('project_id', projectId);
+            await supabaseClient.from('projects').delete().eq('id', projectId);
+            this.refreshProjects();
+        } catch (e) { alert("Error: " + e.message); }
+    }
+
+    async manageProjectUsers(projectId, projectName) {
+        const email = prompt(`Email para asignar a "${projectName}":`);
+        if (!email) return;
+        try {
+            const { data, error } = await supabaseClient.from('user_profiles').select('id').eq('email', email).single();
+            if (error || !data) return alert("Usuario no encontrado.");
+            const { error: ae } = await supabaseClient.from('project_assignments').insert({ project_id: projectId, user_id: data.id });
+            if (ae) alert(ae.code === '23505' ? "Ya asignado." : ae.message); else alert("Asignado.");
+        } catch (e) { alert("Error: " + e.message); }
+    }
+
+    async refreshNodeTypes() {
+        const list = document.getElementById('admin-node-types-list');
+        list.innerHTML = 'Cargando...';
+        try {
+            const { data: types, error } = await supabaseClient.from('node_types').select('*').order('name');
+            if (error) throw error;
+            list.innerHTML = '';
+            types.forEach(t => {
+                const div = document.createElement('div');
+                div.style.border = '1px solid #eee'; div.style.padding = '10px'; div.style.marginBottom = '5px';
+                div.style.borderRadius = '4px'; div.style.backgroundColor = '#fff';
+                div.innerHTML = `
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <div>
+                            <span style="color:${t.color}">●</span> <strong>${t.name}</strong>
+                            <div style="font-size:11px; color:#666;">Campos: ${t.fields.map(f => f.name).join(', ') || 'Básico'}</div>
+                        </div>
+                        <div style="display:flex; gap:5px;">
+                            <button class="btn-secondary" style="padding:2px 5px; font-size:11px;" onclick='window.adminManager.openEditNodeTypeModal(${JSON.stringify(t)})'>✏️</button>
+                            <button class="btn-danger" style="padding:2px 5px; font-size:11px;" onclick="window.adminManager.deleteNodeType('${t.id}')">🗑️</button>
+                        </div>
+                    </div>`;
+                list.appendChild(div);
+            });
+        } catch (e) { list.innerHTML = `<p style="color:red">Error: ${e.message}</p>`; }
+    }
+
+    async deleteNodeType(id) {
+        if (!confirm("¿Eliminar tipo de nodo?")) return;
+        const { error } = await supabaseClient.from('node_types').delete().eq('id', id);
+        if (error) alert(error.message); else this.refreshNodeTypes();
+    }
+
+    openCreateNodeTypeModal() {
+        this.newNodeType = { name: '', color: '#95a5a6', fields: [], isRackable: false };
+        this.renderCreateNodeTypeModal("Nuevo Tipo de Nodo");
+    }
+
+    openEditNodeTypeModal(type) {
+        this.newNodeType = { ...type, isRackable: type.is_rackable || false };
+        this.renderCreateNodeTypeModal("Editar Tipo de Nodo");
+        this.updateNodeTypeFieldsList();
+    }
+
+    renderCreateNodeTypeModal(title) {
+        const modal = document.createElement('div');
+        modal.id = 'modal-create-node-type'; modal.className = 'modal-overlay'; modal.style.zIndex = '3000';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:500px;">
+                <h3>${title}</h3>
+                <div class="form-group">
+                    <label class="form-label">Nombre del Tipo</label>
+                    <input type="text" id="nt-name" class="form-input" placeholder="Ej: NAP_VIP" value="${this.newNodeType.name}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Color de Icono</label>
+                    <input type="color" id="nt-color" class="form-input" value="${this.newNodeType.color}">
+                </div>
+                <div class="form-group" style="display:flex; align-items:center; gap:10px; background:#f8f9fa; padding:10px; border-radius:4px; margin-top:10px;">
+                    <input type="checkbox" id="nt-rackable" ${this.newNodeType.isRackable ? 'checked' : ''} style="width:18px; height:18px; cursor:pointer;">
+                    <label for="nt-rackable" style="cursor:pointer; font-size:14px; font-weight:500; color:var(--primary-color);">📦 Es Rackeable (puede estar dentro de un Rack)</label>
+                </div>
+                <div style="margin-top:20px; border-top:1px solid #eee; padding-top:10px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <strong>Campos Dinámicos</strong>
+                        <button class="btn-secondary" style="padding:2px 10px; font-size:12px;" onclick="window.adminManager.addNodeTypeField()">+ Agregar Campo</button>
+                    </div>
+                    <div id="nt-fields-list" style="margin-top:10px;"></div>
+                </div>
+                <div class="form-actions" style="margin-top:20px;">
+                    <button class="btn-secondary" onclick="document.body.removeChild(document.getElementById('modal-create-node-type'))">Cancelar</button>
+                    <button class="action-btn" onclick="window.adminManager.saveNodeType()">Guardar Tipo</button>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+    }
+
+    addNodeTypeField() {
+        const name = prompt("Nombre del campo:");
+        if (!name) return;
+        const typeHtml = `
+            <div id="field-type-selector" class="modal-overlay" style="z-index:3100;">
+                <div class="modal-content" style="max-width:300px;">
+                    <h4>Tipo para "${name}"</h4>
+                    <select id="nt-field-type-select" class="form-select" style="margin-bottom:15px;">
+                        <option value="text">Texto Corto</option>
+                        <option value="textarea">Texto Largo</option>
+                        <option value="number">Número</option>
+                        <option value="select">Lista de Opciones (Menu)</option>
+                        <option value="address">Dirección</option>
+                        <option value="ports">Puertos de Red</option>
+                        <option value="splitter">Splitter</option>
+                        <option value="rack">Rack / Equipos</option>
+                    </select>
+                    <div class="form-actions">
+                        <button class="btn-secondary" onclick="document.body.removeChild(document.getElementById('field-type-selector'))">Cancelar</button>
+                        <button class="action-btn" id="btn-confirm-field-type">Confirmar</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.insertAdjacentHTML('beforeend', typeHtml);
+        document.getElementById('btn-confirm-field-type').onclick = () => {
+            const type = document.getElementById('nt-field-type-select').value;
+            let options = null;
+            if (type === 'select') {
+                const optStr = prompt("Ingrese las opciones separadas por coma (ej: UTP, Interior, Exterior):");
+                if (optStr) options = optStr.split(',').map(o => o.trim());
             }
+            this.newNodeType.fields.push({ name, type, options });
+            document.body.removeChild(document.getElementById('field-type-selector'));
+            this.updateNodeTypeFieldsList();
+        };
+    }
+
+    updateNodeTypeFieldsList() {
+        const list = document.getElementById('nt-fields-list');
+        if (!list) return;
+        list.innerHTML = '';
+        this.newNodeType.fields.forEach((f, idx) => {
+            const item = document.createElement('div');
+            item.style = 'display:flex; justify-content:space-between; padding:5px; background:#f9f9f9; margin-bottom:2px; font-size:12px;';
+            item.innerHTML = `<span><strong>${f.name}</strong> (${f.type})</span><button style="border:none; background:none; cursor:pointer;" onclick="window.adminManager.removeNodeTypeField(${idx})">❌</button>`;
+            list.appendChild(item);
+        });
+    }
+
+    removeNodeTypeField(idx) {
+        this.newNodeType.fields.splice(idx, 1);
+        this.updateNodeTypeFieldsList();
+    }
+
+    async saveNodeType() {
+        const name = document.getElementById('nt-name').value.trim();
+        const color = document.getElementById('nt-color').value;
+        const isRackable = document.getElementById('nt-rackable').checked;
+        if (!name) return alert("Nombre requerido");
+        try {
+            const typeData = {
+                name: name.toUpperCase(),
+                color,
+                fields: this.newNodeType.fields,
+                is_rackable: isRackable
+            };
+            let error;
+            if (this.newNodeType.id) {
+                const { error: e } = await supabaseClient.from('node_types').update(typeData).eq('id', this.newNodeType.id);
+                error = e;
+            } else {
+                const { error: e } = await supabaseClient.from('node_types').insert(typeData);
+                error = e;
+            }
+            if (error) throw error;
+            alert("Tipo de nodo guardado exitosamente");
+            document.body.removeChild(document.getElementById('modal-create-node-type'));
+            this.refreshNodeTypes();
+            if (window.uiManager) window.uiManager.loadCustomNodeTypes();
+        } catch (e) {
+            console.error("Error saving node type:", e);
+            alert("Error al guardar tipo: " + (e.message || "Error desconocido"));
+        }
+    }
+
+    // --- Cable Types Management ---
+    async refreshCableTypes() {
+        const list = document.getElementById('admin-cable-types-list');
+        if (!list) return;
+        list.innerHTML = 'Cargando tipos de cable...';
+        try {
+            const { data, error } = await supabaseClient.from('cable_types').select('*').order('name');
+            if (error) throw error;
+            this.renderCableTypes(data || []);
         } catch (e) {
             list.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
         }
     }
 
-    async deleteProject(projectId) {
-        if (!confirm("ADVERTENCIA: ¿Eliminar proyecto? Esto borrará TODOS los nodos y conexiones asociados. No se puede deshacer.")) return;
+    renderCableTypes(types) {
+        const list = document.getElementById('admin-cable-types-list');
+        if (types.length === 0) {
+            list.innerHTML = '<p style="padding:10px; color:#666;">No hay tipos de cable configurados.</p>';
+            return;
+        }
+
+        let html = `
+            <table style="width:100%; font-size:13px; border-collapse: collapse; margin-top:10px;">
+                <thead style="background:#f5f5f5; text-align:left;">
+                    <tr>
+                        <th style="padding:8px; border-bottom:1px solid #ddd;">Nombre</th>
+                        <th style="padding:8px; border-bottom:1px solid #ddd;">Medio</th>
+                        <th style="padding:8px; border-bottom:1px solid #ddd;">Hilos/Pares</th>
+                        <th style="padding:8px; border-bottom:1px solid #ddd;">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+        types.forEach(t => {
+            html += `
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding:8px;"><strong>${t.name}</strong><br><small style="color:#666">${t.category || ''} ${t.is_exterior ? '(Ext)' : '(Int)'}</small></td>
+                    <td style="padding:8px;">${t.media_type}</td>
+                    <td style="padding:8px;">${t.threads_count}</td>
+                    <td style="padding:8px;">
+                        <button class="btn-secondary" style="padding:2px 6px; font-size:11px;" onclick='window.adminManager.openEditCableTypeModal(${JSON.stringify(t)})'>✏️</button>
+                        <button class="btn-danger" style="padding:2px 6px; font-size:11px;" onclick="window.adminManager.deleteCableType('${t.id}')">🗑️</button>
+                    </td>
+                </tr>`;
+        });
+        html += `</tbody></table>`;
+        list.innerHTML = html;
+    }
+
+    openCreateCableTypeModal() {
+        this.newCableType = { name: '', media_type: 'FIBRA', category: '', threads_count: 12, is_exterior: true };
+        this.renderCreateCableTypeModal("Nuevo Tipo de Cable");
+    }
+
+    openEditCableTypeModal(type) {
+        this.newCableType = { ...type };
+        this.renderCreateCableTypeModal("Editar Tipo de Cable");
+    }
+
+    renderCreateCableTypeModal(title) {
+        const modal = document.createElement('div');
+        modal.id = 'modal-create-cable-type';
+        modal.className = 'modal-overlay';
+        modal.style.zIndex = '3000';
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:450px;">
+                <h3>${title}</h3>
+                <div class="form-group">
+                    <label class="form-label">Nombre del Cable</label>
+                    <input type="text" id="ct-name" class="form-input" placeholder="Ej: ADSS 12H G.652D" value="${this.newCableType.name}">
+                </div>
+                <div style="display:flex; gap:10px;">
+                    <div class="form-group" style="flex:1">
+                        <label class="form-label">Medio</label>
+                        <select id="ct-media" class="form-select">
+                            <option value="FIBRA" ${this.newCableType.media_type === 'FIBRA' ? 'selected' : ''}>Fibra Óptica</option>
+                            <option value="UTP" ${this.newCableType.media_type === 'UTP' ? 'selected' : ''}>Par Trenzado (UTP)</option>
+                            <option value="SIAMEZ" ${this.newCableType.media_type === 'SIAMEZ' ? 'selected' : ''}>Siamez/Híbrido</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1">
+                        <label class="form-label">Hilos / Pares</label>
+                        <input type="number" id="ct-threads" class="form-input" value="${this.newCableType.threads_count}">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Categoría / Norma</label>
+                    <input type="text" id="ct-category" class="form-input" placeholder="Ej: Cat 6, G.652D" value="${this.newCableType.category || ''}">
+                </div>
+                <div class="form-group" style="display:flex; align-items:center; gap:10px; background:#f8f9fa; padding:10px; border-radius:4px;">
+                    <input type="checkbox" id="ct-exterior" ${this.newCableType.is_exterior ? 'checked' : ''} style="width:18px; height:18px;">
+                    <label for="ct-exterior" style="cursor:pointer; font-size:14px;">Apto para Exterior (Aéreo/Subterráneo)</label>
+                </div>
+
+                <div class="form-actions" style="margin-top:20px;">
+                    <button class="btn-secondary" onclick="document.body.removeChild(document.getElementById('modal-create-cable-type'))">Cancelar</button>
+                    <button class="action-btn" onclick="window.adminManager.saveCableType()">Guardar Cable</button>
+                </div>
+            </div>`;
+        document.body.appendChild(modal);
+    }
+
+    async saveCableType() {
+        const name = document.getElementById('ct-name').value.trim();
+        const media = document.getElementById('ct-media').value;
+        const threads = parseInt(document.getElementById('ct-threads').value);
+        const category = document.getElementById('ct-category').value.trim();
+        const exterior = document.getElementById('ct-exterior').checked;
+
+        if (!name) return alert("Nombre requerido");
+        if (isNaN(threads) || threads < 1) return alert("Cantidad de hilos no válida");
+
         try {
-            // Delete project (cascade should handle nodes/connections if well defined, but our script said ON DELETE CASCADE only for assignments and maybe others? 
-            // In `start.py` we didn't define FK for nodes->projects explicitly in the Add Column step, so we might need manual cleanup or rely on logic.
-            // Wait, `nodes` table add column didn't add REFERENCES. So we must delete manually or update schema.
-            // Manual deletion is safer for now.
+            const cableData = {
+                name: name.toUpperCase(),
+                media_type: media,
+                threads_count: threads,
+                category: category,
+                is_exterior: exterior
+            };
 
-            await supabaseClient.from('nodes').delete().eq('project_id', projectId);
-            await supabaseClient.from('connections').delete().eq('project_id', projectId);
-            await supabaseClient.from('projects').delete().eq('id', projectId);
+            let error;
+            if (this.newCableType.id) {
+                const { error: e } = await supabaseClient.from('cable_types').update(cableData).eq('id', this.newCableType.id);
+                error = e;
+            } else {
+                const { error: e } = await supabaseClient.from('cable_types').insert(cableData);
+                error = e;
+            }
 
-            this.refreshProjects();
+            if (error) throw error;
+            alert("Tipo de cable guardado exitosamente");
+            document.body.removeChild(document.getElementById('modal-create-cable-type'));
+            this.refreshCableTypes();
+            if (window.uiManager) window.uiManager.loadCableTypes();
         } catch (e) {
-            alert("Error eliminando proyecto: " + e.message);
+            console.error("Error saving cable type:", e);
+            alert("Error al guardar tipo: " + e.message);
         }
     }
 
-    async manageProjectUsers(projectId, projectName) {
-        const email = prompt(`Ingrese el email del usuario para asignar al proyecto "${projectName}":\n(Deje vacío para cancelar)`);
-        if (!email) return;
-
-        // Find user by email
+    async deleteCableType(id) {
+        if (!confirm("¿Eliminar este tipo de cable? Puede afectar conexiones existentes.")) return;
         try {
-            const { data, error } = await supabaseClient.from('user_profiles').select('id').eq('email', email).single();
-            if (error || !data) {
-                alert("Usuario no encontrado (debe haberse registrado primero).");
-                return;
-            }
-
-            // Assign
-            const { error: assignError } = await supabaseClient.from('project_assignments').insert({
-                project_id: projectId,
-                user_id: data.id,
-                assigned_by: (await supabaseClient.auth.getUser()).data.user.id
-            });
-
-            if (assignError) {
-                if (assignError.code === '23505') alert("El usuario ya está asignado a este proyecto.");
-                else throw assignError;
-            } else {
-                alert("Usuario asignado exitosamente.");
-            }
-
+            const { error } = await supabaseClient.from('cable_types').delete().eq('id', id);
+            if (error) throw error;
+            this.refreshCableTypes();
+            if (window.uiManager) window.uiManager.loadCableTypes();
         } catch (e) {
-            alert("Error: " + e.message);
+            alert("Error al eliminar: " + e.message);
         }
     }
 }
@@ -957,9 +1224,8 @@ class InventoryManager {
                 rack: node.rack || [],
                 splitters: node.splitters || [],
                 clientData: node.clientData || null,
-                splitters: node.splitters || [],
-                clientData: node.clientData || null,
                 damageReports: node.damageReports || [],
+                customFields: node.customFields || {},
                 project_id: this.projectId
             };
 
@@ -1001,7 +1267,8 @@ class InventoryManager {
                     rack: updatedNode.rack || [],
                     splitters: updatedNode.splitters || [],
                     clientData: updatedNode.clientData || null,
-                    damageReports: updatedNode.damageReports || []
+                    damageReports: updatedNode.damageReports || [],
+                    customFields: updatedNode.customFields || {}
                 };
 
                 const { error } = await supabaseClient.from('nodes').update(nodeData).eq('id', updatedNode.id);
@@ -1343,6 +1610,8 @@ class UIManager {
     constructor(mapManager, inventoryManager) {
         this.mapManager = mapManager;
         this.inventoryManager = inventoryManager;
+        this.customNodeTypes = [];
+        this.cableTypes = [];
 
         // State
         this.isAddingNode = false;
@@ -1366,7 +1635,9 @@ class UIManager {
             ports: document.getElementById('view-port-management'),
             connection: document.getElementById('view-connection-details'),
             splitter: document.getElementById('view-splitter-management'),
-            reports: document.getElementById('view-reports')
+            reports: document.getElementById('view-reports'),
+            inventoryMessage: document.getElementById('view-inventory-message'),
+            reportsMessage: document.getElementById('view-reports-message')
         };
 
         // Main content elements
@@ -1387,6 +1658,7 @@ class UIManager {
             fibers: document.getElementById('conn-fibers-display'),
             distance: document.getElementById('conn-distance-display'),
             btnEdit: document.getElementById('btn-edit-connection'),
+            btnMapPorts: document.getElementById('btn-map-to-ports'),
             btnDelete: document.getElementById('btn-delete-connection'),
             btnClose: document.getElementById('btn-close-connection')
         };
@@ -1402,7 +1674,8 @@ class UIManager {
             preview: document.getElementById('location-preview'),
             clientFields: document.getElementById('client-fields'),
             clientAddress: document.getElementById('client-address'),
-            clientPlan: document.getElementById('client-plan')
+            clientPlan: document.getElementById('client-plan'),
+            dynamicFields: document.getElementById('dynamic-fields')
         };
 
         this.details = {
@@ -1413,6 +1686,9 @@ class UIManager {
             btnConnect: document.getElementById('btn-start-connection'),
             btnReport: document.getElementById('btn-report-damage'),
             btnViewRack: document.getElementById('btn-view-rack'),
+            btnViewSplitters: document.getElementById('btn-view-splitters'),
+            btnManagePorts: document.getElementById('btn-manage-node-ports'),
+            btnRelocate: document.getElementById('btn-start-relocation'),
             btnDelete: document.getElementById('btn-delete-node'),
             btnClose: document.getElementById('btn-close-details'),
             reportResults: document.getElementById('damage-report-results'),
@@ -1457,6 +1733,7 @@ class UIManager {
             connSectionType: document.getElementById('conn-section-type'),
             connSectionGroup: document.getElementById('group-section-type'),
             connFibers: document.getElementById('conn-fibers'),
+            connFibersGroup: document.getElementById('group-fibers'),
 
             equipName: document.getElementById('equip-name'),
             equipType: document.getElementById('equip-type'),
@@ -1539,6 +1816,16 @@ class UIManager {
             btnCancelFiberConn: document.getElementById('btn-cancel-fiber-conn')
         };
 
+        // Fiber Mapping Modal
+        this.mappingModal = {
+            modal: document.getElementById('modal-fiber-mapping'),
+            sourceNode: document.getElementById('mapping-source-node'),
+            targetNode: document.getElementById('mapping-target-node'),
+            fiberList: document.getElementById('fiber-mapping-list'),
+            btnCancel: document.getElementById('btn-cancel-mapping'),
+            btnSave: document.getElementById('btn-save-mapping')
+        };
+
         // State for Splitter Management
         this.currentSplitterNodeId = null;
         this.currentSplitterId = null;
@@ -1585,6 +1872,18 @@ class UIManager {
         };
         this.inventoryDisplayMode = 'grid'; // 'grid' or 'list'
         this.inventorySearchQuery = '';
+        this.inventoryViewMode = 'summary'; // 'summary' or 'category'
+        this.currentInventoryCategory = null; // e.g., 'NAP', 'ASU'
+        this.currentInventoryType = null; // 'node' or 'connection'
+
+        // Favorite categories (Load from localStorage)
+        try {
+            const savedFavs = localStorage.getItem('ultranet_gifo_favs');
+            this.favoriteCategories = savedFavs ? JSON.parse(savedFavs) : ['ONU', 'NAP', 'OLT', 'RACK'];
+        } catch (e) {
+            console.error('Error parsing favorites:', e);
+            this.favoriteCategories = ['ONU', 'NAP', 'OLT', 'RACK'];
+        }
     }
 
     async init() {
@@ -1596,6 +1895,8 @@ class UIManager {
     async loadProject(projectId, userRole) {
         this.userRole = userRole; // Store role for UI permissions
         await this.inventoryManager.init(projectId);
+        await this.loadCustomNodeTypes();
+        await this.loadCableTypes();
         this.loadExistingData();
 
         // Apply Role Restrictions
@@ -1667,12 +1968,27 @@ class UIManager {
         document.getElementById('btn-cancel-add').addEventListener('click', () => this.cancelAddNode());
         document.getElementById('btn-locate-me').addEventListener('click', () => this.mapManager.locateUser());
 
-        // Toggle Client Fields
+        // Toggle Client Fields and Dynamic Fields
+        // Toggle Client Fields and Dynamic Fields
         this.form.type.addEventListener('change', (e) => {
-            if (e.target.value === 'ONU') {
+            const type = e.target.value;
+
+            // Core logic for ONU
+            if (type === 'ONU') {
                 this.form.clientFields.classList.remove('hidden');
             } else {
                 this.form.clientFields.classList.add('hidden');
+            }
+
+            // Custom Node Types logic
+            this.renderDynamicFields(type);
+
+            // Draw attention to location if not set
+            if (!this.tempLocation) {
+                this.form.preview.style.transform = "scale(1.05)";
+                setTimeout(() => this.form.preview.style.transform = "scale(1)", 200);
+                this.form.preview.style.boxShadow = "0 0 10px rgba(231, 76, 60, 0.5)";
+                setTimeout(() => this.form.preview.style.boxShadow = "none", 1000);
             }
         });
 
@@ -1680,6 +1996,8 @@ class UIManager {
         document.addEventListener('map:clicked', (e) => {
             if (this.isAddingNode) {
                 this.setFormLocation(e.detail);
+            } else if (this.isRelocatingNode) {
+                this.updateNodeLocation(this.isRelocatingNode, e.detail);
             } else if (this.isConnecting) {
                 this.addConnectionWaypoint(e.detail);
             }
@@ -1725,7 +2043,7 @@ class UIManager {
         });
 
         this.details.btnDelete.addEventListener('click', () => {
-            if (confirm('¿Estás seguro de eliminar este nodo?')) this.deleteCurrentNode();
+            this.deleteCurrentNode();
         });
 
         this.details.btnConnect.addEventListener('click', () => {
@@ -1738,6 +2056,22 @@ class UIManager {
 
         this.details.btnViewRack.addEventListener('click', () => {
             this.showRackView();
+        });
+
+        this.details.btnViewSplitters.addEventListener('click', () => {
+            this.showSplitterView();
+        });
+
+        this.details.btnManagePorts.addEventListener('click', () => {
+            const node = this.inventoryManager.getNode(this.currentNodeId);
+            if (node && node.rack && node.rack.length > 0) {
+                this.currentRackNodeId = this.currentNodeId;
+                this.showPortView(node.rack[0].id); // Usually just one internal equip for dynamic ports
+            }
+        });
+
+        this.details.btnRelocate.addEventListener('click', () => {
+            if (this.currentNodeId) this.startNodeRelocation(this.currentNodeId);
         });
 
         // Rack Actions
@@ -1775,13 +2109,29 @@ class UIManager {
             await this.finalizeConnection();
         });
 
-        // Show/Hide Section Type based on Cable Type
+        // Show/Hide Section Type based on Cable Type and auto-populate fiber count
         this.modalForms.connCableType.addEventListener('change', (e) => {
-            const isDrop = e.target.value === 'DROP';
+            const selectedOption = e.target.selectedOptions[0];
+            const isDrop = e.target.value.includes('DROP');
+            const mediaType = selectedOption?.dataset.media || 'FIBRA';
+            const isUTP = mediaType === 'UTP';
+
             if (isDrop) {
                 this.modalForms.connSectionGroup.classList.add('hidden');
             } else {
                 this.modalForms.connSectionGroup.classList.remove('hidden');
+            }
+
+            // Hide fiber count selector for UTP (always 4 pairs)
+            if (isUTP) {
+                this.modalForms.connFibersGroup.classList.add('hidden');
+                this.modalForms.connFibers.value = '4'; // UTP always has 4 pairs
+            } else {
+                this.modalForms.connFibersGroup.classList.remove('hidden');
+                // Auto-populate fiber/pair count from cable type
+                if (selectedOption && selectedOption.dataset.threads) {
+                    this.modalForms.connFibers.value = selectedOption.dataset.threads;
+                }
             }
         });
 
@@ -1823,7 +2173,11 @@ class UIManager {
         this.fusionUI.btnConnect.addEventListener('click', () => this.fusionConnect());
         this.fusionUI.btnDisconnect.addEventListener('click', () => this.fusionDisconnect());
         this.connectionDetails.btnEdit.addEventListener('click', () => this.editConnection());
+        this.connectionDetails.btnMapPorts.addEventListener('click', () => this.openFiberMappingModal());
         this.connectionDetails.btnDelete.addEventListener('click', async () => await this.deleteConnection());
+
+        this.mappingModal.btnCancel.addEventListener('click', () => this.mappingModal.modal.classList.add('hidden'));
+        this.mappingModal.btnSave.addEventListener('click', () => this.saveFiberMapping());
 
         // Connection click event
         document.addEventListener('connection:clicked', (e) => {
@@ -1870,8 +2224,32 @@ class UIManager {
         this.modals.equipment.classList.remove('hidden');
         this.modalForms.equipName.focus();
 
-        // Reset and trigger change to set initial state
-        this.modalForms.equipType.value = 'SWITCH';
+        // Populate Equipment Types dynamically
+        const select = this.modalForms.equipType;
+        const currentVal = select.value || 'SWITCH';
+        select.innerHTML = '';
+
+        // Standard types
+        const standardTypes = ['ROUTER', 'SWITCH', 'PATCH PANEL', 'ODF', 'SERVER', 'MEDIA_CONVERTER', 'ASU'];
+
+        // Combine standard types with rackable custom types
+        const availableTypes = new Set(standardTypes);
+        this.customNodeTypes.filter(t => t.is_rackable).forEach(t => availableTypes.add(t.name));
+
+        Array.from(availableTypes).sort().forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t;
+            opt.textContent = t;
+            select.appendChild(opt);
+        });
+
+        // Restore value if still available, or default to SWITCH
+        if ([...availableTypes].includes(currentVal)) {
+            select.value = currentVal;
+        } else {
+            select.value = 'SWITCH';
+        }
+
         this.modalForms.equipType.dispatchEvent(new Event('change'));
         this.modalForms.equipIsProvider.checked = false;
     }
@@ -1882,8 +2260,10 @@ class UIManager {
         this.isAddingNode = true;
         this.switchView('add');
         this.resetForm();
-        this.form.preview.innerHTML = "📍 Haz clic en el mapa para ubicar";
-        this.form.preview.style.color = "var(--primary-color)";
+        this.form.preview.innerHTML = "<small style='color:#e74c3c; font-weight:bold;'>📍 HAZ CLIC EN EL MAPA PARA UBICAR</small>";
+        this.form.preview.classList.remove('success');
+        this.form.preview.style.borderColor = "#ff4d4f";
+        this.form.preview.style.background = "#fff5f5";
     }
 
     cancelAddNode() {
@@ -1895,8 +2275,10 @@ class UIManager {
         this.tempLocation = latlng;
         this.form.lat.value = latlng.lat;
         this.form.lng.value = latlng.lng;
-        this.form.preview.innerHTML = `✅ Ubicación: ${latlng.lat.toFixed(5)}, ${latlng.lng.toFixed(5)}`;
-        this.form.preview.style.color = "green";
+        this.form.preview.innerHTML = `<span style="font-weight:bold;">✅ UBICACIÓN LISTA</span><br><small>${latlng.lat.toFixed(6)}, ${latlng.lng.toFixed(6)}</small>`;
+        this.form.preview.classList.add('success');
+        this.form.preview.style.borderColor = "#2ecc71";
+        this.form.preview.style.background = "#f0fff4";
     }
 
     async saveNode() {
@@ -1914,12 +2296,53 @@ class UIManager {
             rack: [] // Initialize empty rack
         };
 
-        // Add client data if ONU
-        if (newNode.type === 'ONU') {
-            newNode.clientData = {
-                address: this.form.clientAddress.value,
-                plan: this.form.clientPlan.value
-            };
+        // ONU-specific legacy support - mostly handled by dynamic fields now
+        if (newNode.type === 'ONU' && this.form.clientAddress && this.form.clientPlan) {
+            const addr = this.form.clientAddress.value;
+            const plan = this.form.clientPlan.value;
+            if (addr || plan) {
+                newNode.clientData = { address: addr, plan: plan };
+            }
+        }
+
+        // Capture Dynamic Fields
+        const customType = this.customNodeTypes.find(t => t.name === newNode.type);
+        if (customType) {
+            newNode.customFields = {};
+            customType.fields.forEach(f => {
+                const safeName = f.name.replace(/[^a-z0-9]/gi, '_');
+                const input = document.getElementById(`dynamic-field-${safeName}`);
+                if (input) {
+                    let val = input.value;
+                    if (f.type === 'ports') {
+                        try {
+                            const groups = JSON.parse(val || "[]");
+                            if (groups.length > 0) {
+                                const equip = {
+                                    id: 'equip-' + Math.random().toString(36).substr(2, 9),
+                                    name: f.name,
+                                    type: 'INTERNO',
+                                    ports: []
+                                };
+                                let portCount = 1;
+                                groups.forEach(g => {
+                                    for (let i = 0; i < g.qty; i++) {
+                                        equip.ports.push({
+                                            id: `p${portCount++}`,
+                                            type: g.type,
+                                            label: `${g.type}-${i + 1}`,
+                                            status: 'available'
+                                        });
+                                    }
+                                });
+                                newNode.rack.push(equip);
+                                val = groups; // Store as array in customFields
+                            }
+                        } catch (e) { console.warn("Error parsing ports", e); }
+                    }
+                    newNode.customFields[f.name] = val;
+                }
+            });
         }
 
         const addedNode = await this.inventoryManager.addNode(newNode);
@@ -1927,10 +2350,38 @@ class UIManager {
         if (addedNode) {
             this.mapManager.addMarker(addedNode);
             this.isAddingNode = false;
+            this.tempLocation = null;
             this.switchView('list');
             this.refreshNodeList();
         }
-        this.refreshNodeList();
+    }
+
+    startNodeRelocation(nodeId) {
+        const node = this.inventoryManager.getNode(nodeId);
+        if (!node) return;
+        alert(`Modo Reubicación: Haz clic en el nuevo punto del mapa para mover "${node.name}".`);
+        this.isRelocatingNode = nodeId;
+    }
+
+    async updateNodeLocation(nodeId, latlng) {
+        if (!confirm("¿Mover este nodo a la nueva ubicación?")) return;
+        try {
+            const { error } = await supabaseClient.from('nodes').update({ lat: latlng.lat, lng: latlng.lng }).eq('id', nodeId);
+            if (error) throw error;
+
+            // Update local data
+            const node = this.inventoryManager.getNode(nodeId);
+            if (node) {
+                node.lat = latlng.lat;
+                node.lng = latlng.lng;
+            }
+
+            // Update marker
+            this.mapManager.updateMarker(nodeId, latlng);
+            this.isRelocatingNode = null;
+            this.showNodeDetails(nodeId);
+            alert("Ubicación actualizada correctamente.");
+        } catch (e) { alert("Error al mover: " + e.message); }
     }
 
     // --- Connection Flow ---
@@ -1975,7 +2426,11 @@ class UIManager {
             this.pendingConnectionTarget = targetNode;
 
             // Check if source or target is a RACK
-            if (sourceNode.type === 'RACK' || targetNode.type === 'RACK') {
+            // Any node with equipment/rack content or custom ports behaves like a RACK
+            const sourceHasPorts = sourceNode.rack && sourceNode.rack.length > 0;
+            const targetHasPorts = targetNode.rack && targetNode.rack.length > 0;
+
+            if (sourceHasPorts || targetHasPorts) {
                 console.log('Rack connection detected');
                 // Need to select ports
                 this.handleRackConnection(sourceNode, targetNode);
@@ -1988,25 +2443,34 @@ class UIManager {
     }
 
     handleRackConnection(sourceNode, targetNode) {
-        // Determine which node is the rack
-        if (sourceNode.type === 'RACK' && targetNode.type === 'RACK') {
-            alert('No se puede conectar directamente dos RACKs. Conecta equipos específicos dentro de cada rack.');
-            this.cancelConnectionFlow();
-            return;
-        }
+        // Check if nodes have ports/rack content
+        const sourceHasPorts = sourceNode.rack && sourceNode.rack.length > 0;
+        const targetHasPorts = targetNode.rack && targetNode.rack.length > 0;
 
-        if (sourceNode.type === 'RACK') {
-            // Select port from source rack
+        if (sourceHasPorts && targetHasPorts) {
+            // Both sides have ports: Select Source Port -> Select Target Port -> Connect
             this.openRackPortSelect(sourceNode.id, true, () => {
-                // After selecting source port, show connection modal
+                // Determine if we need to select target port too
+                // (Wait a bit for UX transition)
+                setTimeout(() => {
+                    this.openRackPortSelect(targetNode.id, false, () => {
+                        this.showConnectionModal();
+                    });
+                }, 200);
+            });
+        } else if (sourceHasPorts) {
+            // Only Source has ports
+            this.openRackPortSelect(sourceNode.id, true, () => {
                 this.showConnectionModal();
             });
-        } else if (targetNode.type === 'RACK') {
-            // Select port from target rack
+        } else if (targetHasPorts) {
+            // Only Target has ports
             this.openRackPortSelect(targetNode.id, false, () => {
-                // After selecting target port, show connection modal
                 this.showConnectionModal();
             });
+        } else {
+            // Fallback (shouldn't happen given logic in completeConnection)
+            this.showConnectionModal();
         }
     }
 
@@ -2125,8 +2589,43 @@ class UIManager {
         this.connectionWaypoints.push([targetNode.lat, targetNode.lng]);
 
         // Determine port info
-        const fromPort = sourceNode.type === 'RACK' ? this.selectedSourcePort : null;
-        const toPort = targetNode.type === 'RACK' ? this.selectedTargetPort : null;
+        const fromPort = (sourceNode.type === 'RACK' || (sourceNode.rack && sourceNode.rack.length > 0)) ? this.selectedSourcePort : null;
+        const toPort = (targetNode.type === 'RACK' || (targetNode.rack && targetNode.rack.length > 0)) ? this.selectedTargetPort : null;
+
+        // Port Compatibility Validation
+        const isFiberCable = cableType !== 'UTP';
+        const fiberPortTypes = ['SFP', 'SFP+', 'SC/APC', 'LC'];
+
+        const validatePort = (node, portData, label) => {
+            if (!portData) return true; // No port selected, skip validation
+
+            const equip = node.rack?.find(e => e.id === portData.equipId);
+            if (!equip?.ports) {
+                alert(`⚠️ Error: El equipo no tiene puertos configurados.`);
+                return false;
+            }
+
+            const port = equip.ports.find(p => p.id === portData.portId);
+            if (!port?.type) {
+                alert(`⚠️ Error en ${label}: El puerto no tiene tipo definido. Por favor configura los puertos del equipo.`);
+                return false;
+            }
+
+            const isFiberPort = fiberPortTypes.includes(port.type);
+
+            if (isFiberCable && !isFiberPort) {
+                alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) no es compatible con Fibra Óptica.`);
+                return false;
+            }
+            if (!isFiberCable && isFiberPort) {
+                alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) es de Fibra y no es compatible con cable UTP.`);
+                return false;
+            }
+            return true;
+        };
+
+        if (!validatePort(sourceNode, fromPort, "ORIGEN")) return;
+        if (!validatePort(targetNode, toPort, "DESTINO")) return;
 
         try {
             const conn = await this.inventoryManager.addConnection(
@@ -2608,7 +3107,135 @@ class UIManager {
         const distance = this.mapManager.calculateDistance(connection.path);
         this.connectionDetails.distance.textContent = distance.toFixed(2);
 
+        // Map Ports visibility
+        const isFiber = ['ADSS', 'ASU', 'MINI-ADSS', 'DROP', 'FIBRA'].includes(connection.cableType);
+        const sourceHasPorts = fromNode && fromNode.rack && fromNode.rack.length > 0;
+        const targetHasPorts = toNode && toNode.rack && toNode.rack.length > 0;
+
+        if (isFiber && (sourceHasPorts || targetHasPorts)) {
+            this.connectionDetails.btnMapPorts.classList.remove('hidden');
+        } else {
+            this.connectionDetails.btnMapPorts.classList.add('hidden');
+        }
+
         this.switchView('connection');
+    }
+
+    // --- Fiber to Port Mapping Logic ---
+    openFiberMappingModal() {
+        const connection = this.inventoryManager.getConnections().find(c => c.id === this.currentConnectionId);
+        if (!connection) return;
+
+        const fromNode = this.inventoryManager.getNode(connection.from);
+        const toNode = this.inventoryManager.getNode(connection.to);
+
+        this.mappingModal.sourceNode.innerHTML = `<strong>${fromNode.name}</strong><br><small>${fromNode.type}</small>`;
+        this.mappingModal.targetNode.innerHTML = `<strong>${toNode.name}</strong><br><small>${toNode.type}</small>`;
+
+        this.renderFiberMappingList(connection);
+        this.mappingModal.modal.classList.remove('hidden');
+    }
+
+    renderFiberMappingList(connection) {
+        const container = this.mappingModal.fiberList;
+        container.innerHTML = '';
+
+        const fromNode = this.inventoryManager.getNode(connection.from);
+        const toNode = this.inventoryManager.getNode(connection.to);
+        const isFiberCable = connection.cableType !== 'UTP';
+
+        connection.fiberDetails.forEach(fiber => {
+            const item = document.createElement('div');
+            item.style.padding = '12px';
+            item.style.borderBottom = '1px solid #eee';
+            item.style.display = 'flex';
+            item.style.flexDirection = 'column';
+            item.style.gap = '10px';
+
+            const fromTerm = fiber.fromTermination || {};
+            const toTerm = fiber.toTermination || {};
+
+            item.innerHTML = `
+                <div style="display:flex; align-items:center; gap:10px;">
+                    <div style="width:14px; height:14px; background:${fiber.colorHex}; border:1px solid #ccc; border-radius:3px;"></div>
+                    <div style="flex:1"><strong>Hilo ${fiber.number}</strong> (${fiber.color})</div>
+                </div>
+                
+                <div style="display:flex; gap:10px;">
+                    <div style="flex:1">
+                        <small style="color:#666; font-size:10px; display:block; margin-bottom:2px;">TERMINACIÓN EN ORIGEN</small>
+                        <select class="form-select fiber-mapping-select" data-fiber="${fiber.number}" data-side="from" style="font-size:11px; padding:4px;">
+                            <option value="">(Sin Terminar)</option>
+                            ${this.generatePortOptionsHtml(fromNode, fromTerm.portId, isFiberCable)}
+                        </select>
+                    </div>
+
+                    <div style="flex:1">
+                        <small style="color:#666; font-size:10px; display:block; margin-bottom:2px;">TERMINACIÓN EN DESTINO</small>
+                        <select class="form-select fiber-mapping-select" data-fiber="${fiber.number}" data-side="to" style="font-size:11px; padding:4px;">
+                            <option value="">(Sin Terminar)</option>
+                            ${this.generatePortOptionsHtml(toNode, toTerm.portId, isFiberCable)}
+                        </select>
+                    </div>
+                </div>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    generatePortOptionsHtml(node, selectedPortId, isFiberCable) {
+        if (!node || !node.rack || node.rack.length === 0) return '';
+        const fiberPortTypes = ['SFP', 'SFP+', 'SC/APC', 'LC'];
+        let html = '';
+        node.rack.forEach(equip => {
+            let equipHtml = '';
+            equip.ports.forEach(port => {
+                const isFiberPort = fiberPortTypes.includes(port.type);
+                // Filter ports: only show compatible ones
+                if (isFiberCable === isFiberPort) {
+                    const isSelected = selectedPortId === port.id;
+                    equipHtml += `<option value="${equip.id}|${port.id}|${port.number}" ${isSelected ? 'selected' : ''}>P${port.number} - ${port.type}</option>`;
+                }
+            });
+
+            if (equipHtml) {
+                html += `<optgroup label="${equip.name} (${equip.type})">` + equipHtml + `</optgroup>`;
+            }
+        });
+        return html;
+    }
+
+    async saveFiberMapping() {
+        const connection = this.inventoryManager.getConnections().find(c => c.id === this.currentConnectionId);
+        if (!connection) return;
+
+        const selects = this.mappingModal.fiberList.querySelectorAll('.fiber-mapping-select');
+        selects.forEach(select => {
+            const fiberNum = parseInt(select.dataset.fiber);
+            const side = select.dataset.side;
+            const fiber = connection.fiberDetails.find(f => f.number === fiberNum);
+
+            if (select.value) {
+                const [equipId, portId, portNumber] = select.value.split('|');
+                const termData = {
+                    nodeId: side === 'from' ? connection.from : connection.to,
+                    equipId: equipId,
+                    portId: portId,
+                    portNumber: portNumber
+                };
+                if (side === 'from') fiber.fromTermination = termData; else fiber.toTermination = termData;
+            } else {
+                if (side === 'from') fiber.fromTermination = null; else fiber.toTermination = null;
+            }
+        });
+
+        try {
+            await this.inventoryManager.updateConnection(connection);
+            this.mappingModal.modal.classList.add('hidden');
+            alert("✅ Mapeo de hilos guardado correctamente.");
+        } catch (e) {
+            alert("Error al guardar: " + e.message);
+        }
     }
 
     editConnection() {
@@ -2946,12 +3573,28 @@ class UIManager {
         this.details.coords.textContent = `${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}`;
         this.details.type.style.backgroundColor = this.mapManager.getColorForType(node.type);
 
-        // Show extra info for ONUs
+        // Show extra info for ONUs or Custom Types
         if (node.type === 'ONU' && node.clientData) {
             this.details.extraInfo.innerHTML = `
                 <p><strong>Cliente:</strong> ${node.clientData.address}</p>
                 <p><strong>Plan:</strong> ${node.clientData.plan}</p>
             `;
+        } else if (node.customFields) {
+            let fieldsHtml = '';
+            for (const [key, val] of Object.entries(node.customFields)) {
+                let displayVal = val;
+                if (Array.isArray(val)) {
+                    displayVal = val.map(g => `${g.qty}x ${g.type}`).join(', ');
+                }
+
+                // Antenna A/B Highlight
+                let style = '';
+                if (displayVal === 'Antena A') style = 'color:#e74c3c; font-weight:bold; background:#fdecea; padding:2px 5px; border-radius:3px;';
+                if (displayVal === 'Antena B') style = 'color:#2980b9; font-weight:bold; background:#eaf2f8; padding:2px 5px; border-radius:3px;';
+
+                fieldsHtml += `<p><strong>${key}:</strong> <span style="${style}">${displayVal || '---'}</span></p>`;
+            }
+            this.details.extraInfo.innerHTML = fieldsHtml;
         } else {
             this.details.extraInfo.innerHTML = '';
         }
@@ -3025,12 +3668,53 @@ class UIManager {
             }
         }
 
-        this.details.damageReportsSection.innerHTML = damageReportsHtml;
+        // Actions & Buttons Visibility
+        const nodeTypeCfg = this.customNodeTypes.find(t => t.name === node.type);
 
-        // Check if node has unresolved damage reports and maintain highlighting
+        // Rack Button: Only for RACK type
+        if (node.type === 'RACK') {
+            this.details.btnViewRack.classList.remove('hidden');
+        } else {
+            this.details.btnViewRack.classList.add('hidden');
+        }
+
+        // Manage Ports Button: For non-rack nodes that have ports or rack fields
+        const hasPortsField = nodeTypeCfg && nodeTypeCfg.fields.some(f => f.type === 'ports' || f.type === 'rack');
+        const hasInternalPorts = node.rack && node.rack.length > 0;
+        if (node.type !== 'RACK' && (hasPortsField || hasInternalPorts)) {
+            this.details.btnManagePorts.classList.remove('hidden');
+        } else {
+            this.details.btnManagePorts.classList.add('hidden');
+        }
+
+        // Splitter Button: Only for MUFLA, NAP or if it has an explicit "splitter" field
+        const hasSplitterField = nodeTypeCfg && nodeTypeCfg.fields.some(f => f.type === 'splitter');
+        if (node.type === 'MUFLA' || node.type === 'NAP' || hasSplitterField) {
+            this.details.btnViewSplitters.classList.remove('hidden');
+        } else {
+            this.details.btnViewSplitters.classList.add('hidden');
+        }
+
+        // Connect Button: Only if node has equipment/ports configured
+        const canConnect = node.rack && node.rack.length > 0;
+        this.details.btnConnect.disabled = !canConnect;
+        if (!canConnect) {
+            this.details.btnConnect.title = "Configura puertos antes de conectar";
+            this.details.btnConnect.style.opacity = "0.5";
+            this.details.btnConnect.style.cursor = "not-allowed";
+        } else {
+            this.details.btnConnect.title = "";
+            this.details.btnConnect.style.opacity = "1";
+            this.details.btnConnect.style.cursor = "pointer";
+        }
+
+        // Hide previous reports & refresh styles
+        this.details.reportResults.classList.add('hidden');
+        this.mapManager.resetNetworkStyles();
+
+        // Highlight affected network if there are unresolved reports
         const hasUnresolvedReports = node.damageReports && node.damageReports.some(r => !r.resolved);
         if (hasUnresolvedReports) {
-            // Calculate and maintain downstream impact highlighting
             const impact = this.inventoryManager.getDownstreamImpact(nodeId);
             this.mapManager.highlightAffectedNetwork(
                 impact.nodes.map(n => n.id),
@@ -3038,39 +3722,16 @@ class UIManager {
             );
         }
 
-        // Show/Hide Rack Button only for RACK type
-        if (node.type === 'RACK') {
-            this.details.btnViewRack.classList.remove('hidden');
-        } else {
-            this.details.btnViewRack.classList.add('hidden');
-        }
-
-        // Show/Hide Splitter Button for MUFLA type
-        let btnViewSplitters = document.getElementById('btn-view-splitters');
-        if (!btnViewSplitters) {
-            btnViewSplitters = document.createElement('button');
-            btnViewSplitters.id = 'btn-view-splitters';
-            btnViewSplitters.className = 'action-btn';
-            btnViewSplitters.textContent = '🔌 Ver Splitters';
-            btnViewSplitters.style.marginTop = '10px';
-            btnViewSplitters.addEventListener('click', () => this.showSplitterView());
-            this.details.btnViewRack.parentNode.insertBefore(btnViewSplitters, this.details.btnViewRack.nextSibling);
-        }
-
-        if (node.type === 'MUFLA' || node.type === 'NAP') {
-            btnViewSplitters.classList.remove('hidden');
-        } else {
-            btnViewSplitters.classList.add('hidden');
-        }
-
-        // Hide previous reports
-        this.details.reportResults.classList.add('hidden');
-        this.mapManager.resetNetworkStyles();
-
         this.switchView('details');
     }
 
     async deleteCurrentNode() {
+        if (!this.currentNodeId) return;
+
+        if (!confirm('⚠️ ¿Estás COMPLETAMENTE seguro de eliminar este NODO? Esta acción no se puede deshacer.')) {
+            return;
+        }
+
         if (this.currentNodeId) {
             // Remove connections first visually
             const connections = this.inventoryManager.getConnections();
@@ -3086,6 +3747,147 @@ class UIManager {
             this.refreshNodeList();
             this.currentNodeId = null;
         }
+    }
+
+    async loadCustomNodeTypes() {
+        try {
+            const { data, error } = await supabaseClient.from('node_types').select('*');
+            if (error) throw error;
+            this.customNodeTypes = data || [];
+            this.updateNodeTypeOptions();
+        } catch (e) {
+            console.error("Error loading custom node types:", e);
+        }
+    }
+
+    updateNodeTypeOptions() {
+        const select = this.form.type;
+        select.innerHTML = '<option value="">Seleccione tipo...</option>';
+
+        // Sort types: standard ones first (if we have a preferred order) or just alphabetical
+        const sortedTypes = [...this.customNodeTypes].sort((a, b) => a.name.localeCompare(b.name));
+
+        sortedTypes.forEach(t => {
+            const opt = document.createElement('option');
+            opt.value = t.name;
+            opt.textContent = t.name;
+            // No need for lightning bolt if all are from DB
+            select.appendChild(opt);
+        });
+    }
+
+    async loadCableTypes() {
+        try {
+            const { data, error } = await supabaseClient.from('cable_types').select('*').order('name');
+            if (error) throw error;
+            this.cableTypes = data || [];
+            this.updateCableTypeOptions();
+        } catch (e) {
+            console.error("Error loading cable types:", e);
+        }
+    }
+
+    updateCableTypeOptions() {
+        const select = this.modalForms.connCableType;
+        if (!select) return;
+
+        const currentVal = select.value;
+        select.innerHTML = '';
+
+        this.cableTypes.forEach(type => {
+            const opt = document.createElement('option');
+            opt.value = type.name;
+            opt.textContent = `${type.name} - ${type.media_type} (${type.threads_count}${type.media_type === 'FIBRA' ? 'H' : 'P'})`;
+            opt.dataset.threads = type.threads_count;
+            opt.dataset.media = type.media_type;
+            select.appendChild(opt);
+        });
+
+        if (currentVal && this.cableTypes.find(t => t.name === currentVal)) {
+            select.value = currentVal;
+        }
+    }
+
+    renderDynamicFields(typeName) {
+        const container = this.form.dynamicFields;
+        if (!container) return;
+        container.innerHTML = '';
+        const customType = this.customNodeTypes.find(t => t.name === typeName);
+        if (!customType || !customType.fields) return;
+
+        customType.fields.forEach(f => {
+            const safeName = f.name.replace(/[^a-z0-9]/gi, '_');
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            group.style.borderLeft = `3px solid ${customType.color || '#3498db'}`;
+            group.style.paddingLeft = '10px';
+            group.style.marginBottom = '15px';
+
+            let inputHtml = '';
+            if (f.type === 'textarea') {
+                inputHtml = `<textarea class="form-input" id="dynamic-field-${safeName}" placeholder="${f.name}"></textarea>`;
+            } else if (f.type === 'number') {
+                inputHtml = `<input type="number" class="form-input" id="dynamic-field-${safeName}" placeholder="0">`;
+            } else if (f.type === 'select' && f.options) {
+                inputHtml = `<select class="form-select" id="dynamic-field-${safeName}">
+                    <option value="">Seleccione...</option>
+                    ${f.options.map(o => `<option value="${o}">${o}</option>`).join('')}
+                </select>`;
+            } else if (f.type === 'ports') {
+                inputHtml = `
+                    <div id="ports-config-${safeName}" style="background:#f1f1f1; padding:8px; border-radius:4px; margin-top:5px;">
+                        <div id="ports-list-${safeName}" style="margin-bottom:5px; font-size:11px;"></div>
+                        <div style="display:flex; gap:5px;">
+                            <select id="pt-type-${safeName}" class="form-select" style="font-size:11px; padding:2px;">
+                                <option value="Gigabit">Gigabit</option>
+                                <option value="SFP">SFP</option>
+                                <option value="SFP+">SFP+</option>
+                                <option value="POE">POE</option>
+                                <option value="RJ45">RJ45</option>
+                                <option value="SC/APC">SC/APC</option>
+                                <option value="LC">LC</option>
+                            </select>
+                            <input type="number" id="pt-qty-${safeName}" class="form-input" style="width:50px; font-size:11px; padding:2px;" placeholder="Cant">
+                            <button type="button" class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="window.uiManager.addPortGroupToDynamicField('${safeName}')">+</button>
+                        </div>
+                        <input type="hidden" id="dynamic-field-${safeName}" value="[]">
+                    </div>`;
+            } else if (f.type === 'splitter') {
+                inputHtml = `<div style="font-size:11px; color:#666;">Se habilitará gestión de Splitters al crear.</div><input type="text" class="form-input" id="dynamic-field-${safeName}" placeholder="Nota splitter...">`;
+            } else if (f.type === 'rack') {
+                inputHtml = `<div style="font-size:11px; color:#666;">Se habilitará gestión de Rack al crear.</div><input type="text" class="form-input" id="dynamic-field-${safeName}" placeholder="Nota rack...">`;
+            } else {
+                inputHtml = `<input type="text" class="form-input" id="dynamic-field-${safeName}" placeholder="${f.name}">`;
+            }
+
+            group.innerHTML = `<label class="form-label">${f.name}</label>${inputHtml}`;
+            container.appendChild(group);
+        });
+    }
+
+    addPortGroupToDynamicField(fieldKey) {
+        const type = document.getElementById(`pt-type-${fieldKey}`).value;
+        const qty = parseInt(document.getElementById(`pt-qty-${fieldKey}`).value);
+        if (!qty || qty <= 0) return;
+
+        const hiddenInput = document.getElementById(`dynamic-field-${fieldKey}`);
+        if (!hiddenInput) return;
+
+        let groups = JSON.parse(hiddenInput.value || "[]");
+        groups.push({ type, qty });
+        hiddenInput.value = JSON.stringify(groups);
+
+        // Update UI list
+        const list = document.getElementById(`ports-list-${fieldKey}`);
+        if (list) {
+            const tag = document.createElement('span');
+            tag.style = 'display:inline-block; background:#fff; border:1px solid #ccc; padding:2px 5px; margin:2px; border-radius:3px; font-size:10px;';
+            tag.textContent = `${qty}x ${type}`;
+            list.appendChild(tag);
+        }
+
+        // Reset qty
+        document.getElementById(`pt-qty-${fieldKey}`).value = '';
     }
 
     // --- Splitter Management ---
@@ -4343,7 +5145,7 @@ class UIManager {
 
         if (btnMap) {
             btnMap.addEventListener('click', () => {
-                this.switchView('list');
+                this.showMapView();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnMap.classList.add('active');
             });
@@ -4359,7 +5161,7 @@ class UIManager {
 
         if (btnReports) {
             btnReports.addEventListener('click', () => {
-                this.showAllReports();
+                this.showMainReportsView();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnReports.classList.add('active');
             });
@@ -4578,9 +5380,13 @@ class UIManager {
     }
 
     showMainReportsView() {
-        // Hide map, show full reports view
+        // Hide others, show full reports view
         if (this.mapContainer) this.mapContainer.classList.add('hidden');
+        if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.remove('hidden');
+
+        // Switch sidebar to message
+        this.switchView('reportsMessage');
 
         this.currentMainReportsFilter = 'all';
         this.updateFilterButtons('main-filter');
@@ -4588,9 +5394,14 @@ class UIManager {
     }
 
     hideMainReportsView() {
-        // Show map, hide full reports view
+        this.showMapView();
+    }
+
+    showMapView() {
         if (this.mapContainer) this.mapContainer.classList.remove('hidden');
+        if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
+        this.switchView('list');
     }
 
     renderMainReports() {
@@ -4685,123 +5496,263 @@ class UIManager {
     }
 
     showMainInventoryView() {
-        // Hide map and other views, show inventory
+        // Hide others, show inventory
         if (this.mapContainer) this.mapContainer.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
         if (this.fullInventoryView) this.fullInventoryView.classList.remove('hidden');
 
+        // Switch sidebar to message
+        this.switchView('inventoryMessage');
+
+        this.inventoryViewMode = 'summary'; // Reset to summary when opening
         this.renderInventory();
     }
 
     hideMainInventoryView() {
-        if (this.mapContainer) this.mapContainer.classList.remove('hidden');
-        if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
-
-        // Restore map button as active
-        document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
-        const btnMap = document.getElementById('btn-map');
-        if (btnMap) btnMap.classList.add('active');
-        this.switchView('list');
+        this.showMapView();
     }
 
     renderInventory() {
+        if (this.inventoryViewMode === 'summary') {
+            this.renderInventorySummary();
+        } else {
+            this.renderInventoryCategory();
+        }
+    }
+
+    renderInventorySummary() {
         const nodes = this.inventoryManager.getNodes();
         const connections = this.inventoryManager.getConnections();
 
-        // Calculate Totals
-        const stats = {
-            ONU: nodes.filter(n => n.type === 'ONU').length,
-            NAP: nodes.filter(n => n.type === 'NAP').length,
-            FIBER: connections.length,
-            TOTAL_NODES: nodes.length
-        };
+        // 1. Group Nodes by Type
+        const nodeGroups = {};
+        nodes.forEach(n => {
+            if (!nodeGroups[n.type]) nodeGroups[n.type] = [];
+            nodeGroups[n.type].push(n);
+        });
 
-        // Render Stats
+        // 2. Group Connections by Cable Type
+        const connGroups = {};
+        connections.forEach(c => {
+            const type = c.cableType || 'OTRO';
+            if (!connGroups[type]) connGroups[type] = [];
+            connGroups[type].push(c);
+        });
+
+        // Update Stats Summary (Top 4 favorites)
         if (this.inventoryUI.stats) {
-            this.inventoryUI.stats.innerHTML = `
-                <div class="stat-card">
-                    <span class="value">${stats.TOTAL_NODES}</span>
-                    <span class="label">Total Equipos</span>
-                </div>
-                <div class="stat-card">
-                    <span class="value" style="color: #2ecc71;">${stats.ONU}</span>
-                    <span class="label">ONUs / Clientes</span>
-                </div>
-                <div class="stat-card">
-                    <span class="value" style="color: #3498db;">${stats.NAP}</span>
-                    <span class="label">Cajas NAP</span>
-                </div>
-                <div class="stat-card">
-                    <span class="value" style="color: #e67e22;">${stats.FIBER}</span>
-                    <span class="label">Cables / Tramos</span>
-                </div>
-            `;
-        }
+            let statsHtml = '';
+            // Only show the first 4 favorites
+            const displayFavs = this.favoriteCategories.slice(0, 4);
 
-        // Filter items based on search
-        const filteredNodes = nodes.filter(n =>
-            n.name.toLowerCase().includes(this.inventorySearchQuery) ||
-            n.type.toLowerCase().includes(this.inventorySearchQuery)
-        );
+            displayFavs.forEach(fav => {
+                let countLabel = '0';
+                let label = fav;
+                let color = '#333';
 
-        const container = this.inventoryUI.container;
-        if (!container) return;
-
-        if (filteredNodes.length === 0) {
-            container.innerHTML = '<p class="empty-state">No se encontraron elementos.</p>';
-            return;
-        }
-
-        container.innerHTML = '';
-
-        filteredNodes.forEach(node => {
-            if (this.inventoryDisplayMode === 'grid') {
-                const card = document.createElement('div');
-                card.className = 'inventory-card';
-
-                let extraDetails = '';
-                if (node.type === 'ONU' && node.clientData) {
-                    extraDetails = `
-                        <p><strong>Plan:</strong> ${node.clientData.plan || 'N/A'}</p>
-                        <p><strong>Dirección:</strong> ${node.clientData.address || 'N/A'}</p>
-                    `;
-                } else if (node.type === 'RACK' && node.rack) {
-                    extraDetails = `<p><strong>Equipos:</strong> ${node.rack.length}</p>`;
+                if (nodeGroups[fav]) {
+                    countLabel = nodeGroups[fav].length.toString();
+                    color = this.mapManager.getColorForType(fav);
+                    label = fav;
+                } else if (connGroups[fav]) {
+                    const group = connGroups[fav];
+                    let dist = 0;
+                    group.forEach(c => {
+                        if (c.path && Array.isArray(c.path)) {
+                            try {
+                                dist += this.mapManager.calculateDistance(c.path);
+                            } catch (err) {
+                                console.warn(`Invalid path for connection ${c.id}:`, err);
+                            }
+                        }
+                    });
+                    countLabel = `${(dist / 1000).toFixed(2)} km`;
+                    label = `Cable ${fav}`;
+                } else if (fav === 'TOTAL_NODES') {
+                    countLabel = nodes.length.toString();
+                    label = 'Total Equipos';
+                    color = '#800020';
+                } else if (fav === 'TOTAL_FIBER') {
+                    let totalDist = 0;
+                    connections.forEach(c => {
+                        if (c.path && Array.isArray(c.path)) {
+                            try { totalDist += this.mapManager.calculateDistance(c.path); } catch (e) { }
+                        }
+                    });
+                    countLabel = `${(totalDist / 1000).toFixed(2)} km`;
+                    label = 'Fibra Total';
+                    color = '#e67e22';
                 }
 
-                const color = this.mapManager.getColorForType(node.type);
-
-                card.innerHTML = `
-                    <div class="inventory-card-header">
-                        <span class="inventory-card-title">${node.name}</span>
-                        <span class="inventory-card-type" style="background-color: ${color}">${node.type}</span>
-                    </div>
-                    <div class="inventory-card-details">
-                        ${extraDetails || '<p>Equipo de infraestructura de red.</p>'}
-                    </div>
-                    <div class="inventory-card-footer">
-                        <span>ID: ${node.id.substring(0, 8)}...</span>
-                        <span>📍 Ver en Mapa</span>
+                statsHtml += `
+                    <div class="stat-card">
+                        <span class="value" style="color: ${color};">${countLabel}</span>
+                        <span class="label">${label}</span>
                     </div>
                 `;
-                card.addEventListener('click', () => this.navigateToNodeFromInventory(node.id));
-                container.appendChild(card);
-            } else {
-                // List view
-                const item = document.createElement('div');
-                item.className = 'inventory-list-item';
-                const color = this.mapManager.getColorForType(node.type);
+            });
+            this.inventoryUI.stats.innerHTML = statsHtml;
+        }
 
-                item.innerHTML = `
-                    <div style="width: 12px; height: 12px; border-radius: 50%; background-color: ${color}"></div>
-                    <span class="title"><strong>${node.name}</strong></span>
-                    <span style="font-size: 11px; color: #666; margin-right: 20px;">${node.type}</span>
-                    <span style="font-size: 12px; color: var(--primary-color);">Ver Detalles →</span>
-                `;
-                item.addEventListener('click', () => this.navigateToNodeFromInventory(node.id));
-                container.appendChild(item);
-            }
+        // --- RENDER MAIN BODY ---
+        const container = this.inventoryUI.container;
+        if (!container) return;
+        container.innerHTML = '';
+
+        // Header for Equipment
+        const equipHeader = document.createElement('h3');
+        equipHeader.innerText = 'Equipos y Terminales';
+        equipHeader.style.gridColumn = '1 / -1';
+        equipHeader.style.margin = '10px 0';
+        container.appendChild(equipHeader);
+
+        // Render Node Category Cards
+        Object.keys(nodeGroups).sort().forEach(type => {
+            const count = nodeGroups[type].length;
+            const color = this.mapManager.getColorForType(type);
+
+            const card = this.createCategoryCard(type, `${count} unidades`, color, () => {
+                this.inventoryViewMode = 'category';
+                this.currentInventoryCategory = type;
+                this.currentInventoryType = 'node';
+                this.renderInventory();
+            });
+            container.appendChild(card);
         });
+
+        // Header for Cables
+        const cableHeader = document.createElement('h3');
+        cableHeader.innerText = 'Cables y Tendidos';
+        cableHeader.style.gridColumn = '1 / -1';
+        cableHeader.style.margin = '20px 0 10px 0';
+        container.appendChild(cableHeader);
+
+        // Render Cable Category Cards
+        Object.keys(connGroups).sort().forEach(type => {
+            const group = connGroups[type];
+            const count = group.length;
+            let distance = 0;
+            group.forEach(c => {
+                if (c.path && Array.isArray(c.path)) {
+                    try {
+                        distance += this.mapManager.calculateDistance(c.path);
+                    } catch (err) { }
+                }
+            });
+
+            const card = this.createCategoryCard(type, `${count} tramos - ${distance.toFixed(1)}m`, '#333', () => {
+                this.inventoryViewMode = 'category';
+                this.currentInventoryCategory = type;
+                this.currentInventoryType = 'connection';
+                this.renderInventory();
+            });
+            container.appendChild(card);
+        });
+    }
+
+    createCategoryCard(title, subtitle, color, onClick) {
+        const isFav = this.favoriteCategories.includes(title);
+        const card = document.createElement('div');
+        card.className = 'inventory-card category-card';
+        card.innerHTML = `
+            <div class="inventory-card-header" style="justify-content: space-between;">
+                <div>
+                    <span class="inventory-card-title">${title}</span>
+                    <span class="inventory-card-type" style="background-color: ${color}">CATEGORÍA</span>
+                </div>
+                <span class="fav-icon" style="cursor: pointer; font-size: 20px; transition: transform 0.2s;" 
+                      onclick="event.stopPropagation(); window.uiManager.toggleFavorite('${title}')">
+                      ${isFav ? '⭐' : '☆'}
+                </span>
+            </div>
+            <div class="inventory-card-details">
+                <p style="font-size: 16px; margin: 10px 0;"><strong>${subtitle}</strong></p>
+                <p style="font-size: 12px; color: #888;">Haga clic para ver detalles →</p>
+            </div>
+        `;
+        card.addEventListener('click', onClick);
+        return card;
+    }
+
+    toggleFavorite(category) {
+        const index = this.favoriteCategories.indexOf(category);
+        if (index > -1) {
+            this.favoriteCategories.splice(index, 1);
+        } else {
+            // Add as favorite
+            this.favoriteCategories.push(category);
+            // Optional: Limit to last 4 logically, or just let users manage it.
+            // But we only show 4 in top bar.
+        }
+
+        // Save to localStorage
+        localStorage.setItem('ultranet_gifo_favs', JSON.stringify(this.favoriteCategories));
+        this.renderInventory();
+    }
+
+    renderInventoryCategory() {
+        const container = this.inventoryUI.container;
+        if (!container) return;
+        container.innerHTML = '';
+
+        // Back UI
+        const backBtn = document.createElement('div');
+        backBtn.className = 'inventory-list-item back-btn';
+        backBtn.style.gridColumn = '1 / -1';
+        backBtn.style.backgroundColor = '#f0f0f0';
+        backBtn.innerHTML = `<span><strong>← Volver al Resumen</strong> (${this.currentInventoryCategory})</span>`;
+        backBtn.onclick = () => {
+            this.inventoryViewMode = 'summary';
+            this.renderInventory();
+        };
+        container.appendChild(backBtn);
+
+        if (this.currentInventoryType === 'node') {
+            const nodes = this.inventoryManager.getNodes().filter(n => n.type === this.currentInventoryCategory);
+            const filteredNodes = nodes.filter(n =>
+                n.name.toLowerCase().includes(this.inventorySearchQuery.toLowerCase())
+            );
+
+            filteredNodes.forEach(node => {
+                const card = this.createItemCard(node.name, node.type, this.mapManager.getColorForType(node.type), () => {
+                    this.navigateToNodeFromInventory(node.id);
+                }, node.clientData ? `Plan: ${node.clientData.plan}<br>Dirección: ${node.clientData.address}` : `ID: ${node.id.substring(0, 8)}`);
+                container.appendChild(card);
+            });
+        } else {
+            const conns = this.inventoryManager.getConnections().filter(c => (c.cableType || 'OTRO') === this.currentInventoryCategory);
+            conns.forEach(conn => {
+                const fromNode = this.inventoryManager.getNode(conn.from);
+                const toNode = this.inventoryManager.getNode(conn.to);
+                const distance = this.mapManager.calculateDistance(conn.path).toFixed(1);
+
+                const title = `${fromNode?.name || '---'} ↔ ${toNode?.name || '---'}`;
+                const card = this.createItemCard(title, `${conn.fibers} Hilos`, '#333', () => {
+                    this.hideMainInventoryView();
+                    this.showConnectionDetails(conn.id);
+                }, `Metraje: ${distance} metros<br>Tipo: ${conn.sectionType || 'N/A'}`);
+                container.appendChild(card);
+            });
+        }
+    }
+
+    createItemCard(title, type, color, onClick, extraHtml) {
+        const card = document.createElement('div');
+        card.className = 'inventory-card';
+        card.innerHTML = `
+            <div class="inventory-card-header">
+                <span class="inventory-card-title">${title}</span>
+                <span class="inventory-card-type" style="background-color: ${color}">${type}</span>
+            </div>
+            <div class="inventory-card-details">
+                <p>${extraHtml}</p>
+            </div>
+            <div class="inventory-card-footer">
+                <span>📍 Ver en Mapa</span>
+            </div>
+        `;
+        card.addEventListener('click', onClick);
+        return card;
     }
 
     navigateToNodeFromInventory(nodeId) {

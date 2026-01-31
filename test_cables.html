@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>Test Cable Types</title>
+    <script src="db.js"></script>
+</head>
+
+<body>
+    <h1>Test de Tipos de Cable</h1>
+    <div id="result"></div>
+
+    <script>
+        async function testCableTypes() {
+            const result = document.getElementById('result');
+            result.innerHTML = 'Cargando...';
+
+            try {
+                const { data, error } = await supabaseClient
+                    .from('cable_types')
+                    .select('*')
+                    .order('name');
+
+                if (error) throw error;
+
+                let html = '<h2>Tipos de Cable en la Base de Datos:</h2>';
+                html += '<table border="1" style="border-collapse: collapse; width: 100%;">';
+                html += '<tr><th>Nombre</th><th>Medio</th><th>Categoría</th><th>Hilos/Pares</th><th>Exterior</th></tr>';
+
+                data.forEach(cable => {
+                    html += `<tr>
+                        <td>${cable.name}</td>
+                        <td>${cable.media_type}</td>
+                        <td>${cable.category || 'N/A'}</td>
+                        <td>${cable.threads_count}</td>
+                        <td>${cable.is_exterior ? 'Sí' : 'No'}</td>
+                    </tr>`;
+                });
+
+                html += '</table>';
+                html += `<p><strong>Total: ${data.length} tipos de cable</strong></p>`;
+                result.innerHTML = html;
+
+            } catch (e) {
+                result.innerHTML = `<p style="color: red;">Error: ${e.message}</p>`;
+            }
+        }
+
+        // Ejecutar cuando cargue la página
+        window.addEventListener('load', testCableTypes);
+    </script>
+</body>
+
+</html>

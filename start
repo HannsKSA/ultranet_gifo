@@ -87,6 +87,7 @@ def init_db():
                 splitters JSONB DEFAULT '[]'::jsonb,
                 "damageReports" JSONB DEFAULT '[]'::jsonb,
                 "clientData" JSONB DEFAULT '{}'::jsonb,
+                "customFields" JSONB DEFAULT '{}'::jsonb,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
         """)
@@ -117,6 +118,7 @@ def init_db():
             ("nodes", "splitters", "JSONB DEFAULT '[]'::jsonb"),
             ("nodes", "damageReports", '"damageReports"', "JSONB DEFAULT '[]'::jsonb"),
             ("nodes", "clientData", '"clientData"', "JSONB DEFAULT '{}'::jsonb"),
+            ("nodes", "customFields", '"customFields"', "JSONB DEFAULT '{}'::jsonb"),
             ("nodes", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
             ("connections", "cableType", '"cableType"', "TEXT"),
             ("connections", "sectionType", '"sectionType"', "TEXT"),
@@ -198,10 +200,97 @@ def init_db():
             );
         """)
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS node_types (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                color TEXT DEFAULT '#95a5a6',
+                fields JSONB DEFAULT '[]'::jsonb,
+                is_rackable BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
+
+        # Migration for existing table
+        cur.execute("""
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='node_types' AND column_name='is_rackable'
+                ) THEN
+                    ALTER TABLE node_types ADD COLUMN is_rackable BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
+        """)
+
+        # Seeding default node types
+        default_types = [
+            ('OLT', '#800020', [], True),
+            ('OLT', '#800020', [{'name': 'Puertos', 'type': 'ports'}], True),
+            ('ODF', '#9b59b6', [], True),
+            ('MUFLA', '#3498db', [{'name': 'Splitters', 'type': 'splitter'}], False),
+            ('NAP', '#2ecc71', [{'name': 'Splitters', 'type': 'splitter'}], False),
+            ('POSTE', '#95a5a6', [], False),
+            ('RACK', '#7f8c8d', [{'name': 'Equipos', 'type': 'rack'}], False),
+            ('ONU', '#e67e22', [{'name': 'Dirección', 'type': 'address'}, {'name': 'Plan de Servicio', 'type': 'select', 'options': ['50MB', '100MB', '300MB', '1GB']}, {'name': 'Puertos', 'type': 'ports'}], False),
+            ('ANTENA', '#f1c40f', [
+                {'name': 'Modo', 'type': 'select', 'options': ['Antena A', 'Antena B']},
+                {'name': 'Puertos', 'type': 'ports'}
+            ], False),
+            ('ROUTER', '#d35400', [{'name': 'Puertos', 'type': 'ports'}], True),
+            ('SWITCH', '#2c3e50', [{'name': 'Puertos', 'type': 'ports'}], True),
+            ('CAMARA', '#FF5722', [{'name': 'Tipo', 'type': 'select', 'options': ['IP', 'Analoga', 'PTZ']}, {'name': 'Puertos', 'type': 'ports'}], False)
+        ]
+
+        for name, color, fields, is_rackable in default_types:
+            cur.execute("""
+                INSERT INTO node_types (name, color, fields, is_rackable) 
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (name) DO UPDATE SET is_rackable = EXCLUDED.is_rackable
+            """, (name, color, json.dumps(fields), is_rackable))
+        print("✓ Default node types seeded.")
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS cable_types (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                name TEXT UNIQUE NOT NULL,
+                media_type TEXT DEFAULT 'FIBRA', -- FIBRA, UTP, SIAMEZ
+                category TEXT,
+                threads_count INTEGER DEFAULT 1,
+                is_exterior BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
+
+        # Seeding default cable types
+        default_cable_types = [
+            ('ADSS 12H', 'FIBRA', 'G.652D', 12, True),
+            ('ADSS 6H', 'FIBRA', 'G.652D', 6, True),
+            ('DROP 1H', 'FIBRA', 'G.657A1', 1, True),
+            ('UTP Cat6', 'UTP', 'CAT6', 4, False),
+            ('ASU 12H', 'FIBRA', 'G.652D', 12, True)
+        ]
+
+        for name, media, cat, count, ext in default_cable_types:
+            cur.execute("""
+                INSERT INTO cable_types (name, media_type, category, threads_count, is_exterior)
+                VALUES (%s, %s, %s, %s, %s)
+                ON CONFLICT (name) DO NOTHING
+            """, (name, media, cat, count, ext))
+        print("✓ Default cable types seeded.")
+
         # 4. Create Indexes
         cur.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_from ON connections("from");')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_to ON connections("to");')
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_cable_types_name ON cable_types(name);")
+
+        # Clean slate: Delete all existing nodes and connections for fresh start
+        print("🧹 Cleaning database for fresh start...")
+        cur.execute("DELETE FROM connections")
+        cur.execute("DELETE FROM nodes")
+        print("✓ Database cleaned.")
 
         # 5. Migration: Assign existing data to a default project if project_id is NULL
         # Only run this if we have data to avoid unnecessary "Default Project" creation on empty DB

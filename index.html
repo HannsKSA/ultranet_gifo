@@ -78,6 +78,45 @@
                     </div>
                 </div>
 
+                <!-- Informational Sidebars -->
+                <div id="view-inventory-message" class="sidebar-pane hidden">
+                    <div class="sidebar-header-context" style="padding: 10px; border-bottom: 1px solid #eee;">
+                        <h3>📦 Inventario</h3>
+                    </div>
+                    <div style="padding: 20px; text-align: center; color: #666;">
+                        <span style="font-size: 40px; display: block; margin-bottom: 10px;">📊</span>
+                        <p>Estás visualizando el <strong>Inventario Completo</strong> del proyecto.</p>
+                        <p style="margin-top: 15px; font-size: 13px; line-height: 1.5;">
+                            Aquí puedes consultar el conteo total de equipos, materiales y cables.
+                            <br><br>
+                            Utiliza las pestañas superiores para alternar entre el resumen general y lista detallada.
+                        </p>
+                        <button class="btn-secondary" onclick="window.uiManager.showMapView()"
+                            style="margin-top: 20px; width: 100%;">
+                            ← Volver al Mapa
+                        </button>
+                    </div>
+                </div>
+
+                <div id="view-reports-message" class="sidebar-pane hidden">
+                    <div class="sidebar-header-context" style="padding: 10px; border-bottom: 1px solid #eee;">
+                        <h3>⚠️ Reportes de Daños</h3>
+                    </div>
+                    <div style="padding: 20px; text-align: center; color: #666;">
+                        <span style="font-size: 40px; display: block; margin-bottom: 10px;">📋</span>
+                        <p>Gestión Centralizada de <strong>Reportes y Daños</strong>.</p>
+                        <p style="margin-top: 15px; font-size: 13px; line-height: 1.5;">
+                            Administra, filtra y resuelve los reportes de daños de la infraestructura.
+                            <br><br>
+                            Los reportes resueltos se guardan en el historial automáticamente.
+                        </p>
+                        <button class="btn-secondary" onclick="window.uiManager.showMapView()"
+                            style="margin-top: 20px; width: 100%;">
+                            ← Volver al Mapa
+                        </button>
+                    </div>
+                </div>
+
                 <!-- Add Node Form -->
                 <div id="view-add-node" class="sidebar-pane hidden">
                     <h3>Nuevo Nodo</h3>
@@ -85,13 +124,7 @@
                         <div class="form-group">
                             <label class="form-label">Tipo de Equipo</label>
                             <select class="form-select" id="node-type" required>
-                                <option value="OLT">OLT (Cabecera)</option>
-                                <option value="ODF">ODF (Distribución)</option>
-                                <option value="MUFLA">Mufla (Empalme)</option>
-                                <option value="NAP">NAP (Caja Dispersión)</option>
-                                <option value="POSTE">Poste / Reserva</option>
-                                <option value="RACK">Rack / Gabinete</option>
-                                <option value="ONU">ONU / Cliente</option>
+                                <option value="">Cargando tipos...</option>
                             </select>
                         </div>
                         <div class="form-group">
@@ -99,12 +132,36 @@
                             <input type="text" class="form-input" id="node-name" placeholder="Ej: NAP-A01" required>
                         </div>
 
-                        <!-- Client Specific Fields (Hidden by default) -->
-                        <div id="client-fields" class="hidden">
+                        <!-- Dynamic Fields for Custom Node Types -->
+                        <div id="dynamic-fields" style="margin-top: 10px;"></div>
+
+                        <!-- Location Preview (Always Visible & Crucial) -->
+                        <div class="form-group" style="margin-top: 15px;">
+                            <label class="form-label">📍 Ubicación en el Mapa (Obligatorio)</label>
+                            <div class="location-preview" id="location-preview"
+                                style="background: #fff5f5; border: 2px dashed #ff4d4f; padding: 15px; cursor: crosshair; transition: transform 0.2s;">
+                                <small style="color: #ff4d4f; font-weight: bold; font-size: 14px;">Haz clic en el mapa
+                                    para fijar la posición</small>
+                            </div>
+                            <input type="hidden" id="node-lat">
+                            <input type="hidden" id="node-lng">
+                        </div>
+
+                        <!-- Form Actions (Immediately after Location) -->
+                        <div class="form-actions"
+                            style="margin-top: 15px; margin-bottom: 25px; display: flex; gap: 10px;">
+                            <button type="button" class="btn-secondary" id="btn-cancel-add"
+                                style="flex: 1;">Cancelar</button>
+                            <button type="submit" class="action-btn" style="flex: 2; font-weight: bold;">GUARDAR
+                                NODO</button>
+                        </div>
+
+                        <!-- Client Specific Fields (ONU only, move to bottom) -->
+                        <div id="client-fields" class="hidden" style="border-top: 1px solid #eee; padding-top: 15px;">
                             <div class="form-group">
-                                <label class="form-label">Dirección</label>
+                                <label class="form-label">Dirección del Cliente</label>
                                 <input type="text" class="form-input" id="client-address"
-                                    placeholder="Dirección del Cliente">
+                                    placeholder="Ej: Calle 123 #45-67">
                             </div>
                             <div class="form-group">
                                 <label class="form-label">Plan de Servicio</label>
@@ -115,19 +172,6 @@
                                     <option value="1GB">1 GB</option>
                                 </select>
                             </div>
-                        </div>
-
-                        <div class="form-group">
-                            <label class="form-label">Ubicación</label>
-                            <div class="location-preview" id="location-preview">
-                                <small>Haz clic en el mapa para fijar</small>
-                            </div>
-                            <input type="hidden" id="node-lat">
-                            <input type="hidden" id="node-lng">
-                        </div>
-                        <div class="form-actions">
-                            <button type="button" class="btn-secondary" id="btn-cancel-add">Cancelar</button>
-                            <button type="submit" class="action-btn">Guardar</button>
                         </div>
                     </form>
                 </div>
@@ -143,16 +187,29 @@
                         <div id="detail-extra-info"></div>
 
                         <div class="details-actions">
-                            <button class="action-btn" id="btn-start-connection" style="flex:2">🔗 Conectar</button>
+                            <button class="action-btn" id="btn-start-connection" style="flex:2">🔗 CONECTAR</button>
                             <button class="btn-danger" id="btn-report-damage" style="flex:2">⚠️ Reportar Daño</button>
                         </div>
                         <div class="details-actions">
-                            <button class="action-btn" id="btn-view-rack" style="background-color: #4a0012;">🖥️ Ver
-                                Rack</button>
+                            <button class="action-btn hidden" id="btn-view-rack"
+                                style="background-color: #4a0012; width: 100%;">🖥️ VER RACK</button>
                         </div>
                         <div class="details-actions">
-                            <button class="btn-secondary" id="btn-close-details">Cerrar</button>
-                            <button class="btn-danger" id="btn-delete-node">Eliminar</button>
+                            <button class="action-btn hidden" id="btn-view-splitters"
+                                style="background-color: #4a0012; width: 100%;">🔌 VER SPLITTERS</button>
+                        </div>
+                        <div class="details-actions">
+                            <button class="action-btn hidden" id="btn-manage-node-ports"
+                                style="background-color: #4a0012; width: 100%;">🔌 GESTIONAR PUERTOS</button>
+                        </div>
+                        <div class="details-actions"
+                            style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
+                            <button class="action-btn" id="btn-start-relocation" style="flex:1">📍 Mover</button>
+                            <button class="btn-secondary" id="btn-close-details" style="flex:1">Cerrar</button>
+                        </div>
+                        <div class="details-actions">
+                            <button class="btn-danger" id="btn-delete-node"
+                                style="width: 100%; margin-top: 5px;">Eliminar Nodo</button>
                         </div>
 
                         <!-- Damage Reports Section -->
@@ -242,11 +299,16 @@
                         <p><strong>Distancia:</strong> <span id="conn-distance-display">--</span> m</p>
 
                         <div class="details-actions">
-                            <button class="action-btn" id="btn-edit-connection">✏️ Editar</button>
-                            <button class="btn-danger" id="btn-delete-connection">🗑️ Eliminar</button>
+                            <button class="action-btn hidden" id="btn-map-to-ports"
+                                style="background-color: #2c3e50; width: 100%;">🔌 Mapear Hilos a Puertos</button>
                         </div>
                         <div class="details-actions">
-                            <button class="btn-secondary" id="btn-close-connection">Cerrar</button>
+                            <button class="btn-secondary" id="btn-close-connection" style="flex:1">Cerrar</button>
+                            <button class="action-btn" id="btn-edit-connection" style="flex:1">✏️ Editar</button>
+                        </div>
+                        <div class="details-actions">
+                            <button class="btn-danger" id="btn-delete-connection"
+                                style="width: 100%; margin-top: 5px;">🗑️ Eliminar</button>
                         </div>
                     </div>
                 </div>
@@ -307,11 +369,7 @@
                             <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">Vista administrativa completa
                             </p>
                         </div>
-                        <button class="btn-secondary" id="btn-close-full-reports-main" style="padding: 10px 20px;">
-                            ← Volver al Mapa
-                        </button>
                     </div>
-
                     <!-- Filter Buttons -->
                     <div style="display: flex; gap: 10px; margin-bottom: 20px;">
                         <button class="btn-secondary" id="main-filter-all"
@@ -354,9 +412,6 @@
                                 <button id="btn-inventory-list" class="btn-toggle"
                                     style="padding: 5px 12px; border: none; background: transparent; border-radius: 4px; cursor: pointer; font-size: 12px;">Lista</button>
                             </div>
-                            <button class="btn-secondary" id="btn-close-inventory-main" style="padding: 10px 20px;">
-                                ← Volver al Mapa
-                            </button>
                         </div>
                     </div>
 
@@ -402,9 +457,10 @@
                             <option value="TRONCAL">Troncal</option>
                             <option value="SUB_TRONCAL">Sub Troncal</option>
                             <option value="TRAMO">Tramo</option>
+                            <option value="PATCHCORD">Patchcord</option>
                         </select>
                     </div>
-                    <div class="form-group">
+                    <div class="form-group" id="group-fibers">
                         <label class="form-label">Cantidad de Hilos</label>
                         <select class="form-select" id="conn-fibers">
                             <option value="1">1 Hilo</option>
@@ -576,6 +632,38 @@
                         <button type="submit" class="action-btn">Agregar Splitter</button>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- Fiber to Port Mapping Modal -->
+        <div id="modal-fiber-mapping" class="modal-overlay hidden">
+            <div class="modal-content" style="max-width: 700px; width: 90%;">
+                <h3>Mapeo de Hilos a Puertos</h3>
+                <div
+                    style="background: #f8f9fa; padding: 10px; border-radius: 4px; margin-bottom: 20px; font-size: 13px;">
+                    <div id="mapping-nodes-summary"
+                        style="display: flex; justify-content: space-around; text-align: center;">
+                        <div>
+                            <strong style="color:var(--primary-color)">ORIGEN</strong>
+                            <div id="mapping-source-node">--</div>
+                        </div>
+                        <div style="align-self: center; font-size: 20px;">↔️</div>
+                        <div>
+                            <strong style="color:var(--primary-color)">DESTINO</strong>
+                            <div id="mapping-target-node">--</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="fiber-mapping-list"
+                    style="max-height: 400px; overflow-y: auto; border: 1px solid #eee; border-radius: 4px; padding: 10px;">
+                    <!-- Fiber items with port selectors will be here -->
+                </div>
+
+                <div class="form-actions" style="margin-top: 20px;">
+                    <button type="button" class="btn-secondary" id="btn-cancel-mapping">Cerrar</button>
+                    <button type="button" class="action-btn" id="btn-save-mapping">Guardar Mapeo</button>
+                </div>
             </div>
         </div>
 
