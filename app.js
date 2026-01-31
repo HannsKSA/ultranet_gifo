@@ -1878,11 +1878,11 @@ class UIManager {
 
         // Favorite categories (Load from localStorage)
         try {
-            const savedFavs = localStorage.getItem('ultranet_gifo_favs');
-            this.favoriteCategories = savedFavs ? JSON.parse(savedFavs) : ['ONU', 'NAP', 'OLT', 'RACK'];
+            const savedFavs = localStorage.getItem('ultranet_favorites');
+            this.favoriteCategories = savedFavs ? JSON.parse(savedFavs) : [];
         } catch (e) {
             console.error('Error parsing favorites:', e);
-            this.favoriteCategories = ['ONU', 'NAP', 'OLT', 'RACK'];
+            this.favoriteCategories = [];
         }
     }
 
@@ -2528,7 +2528,7 @@ class UIManager {
         equip.ports.forEach(port => {
             const btn = document.createElement('div');
             btn.className = 'port-item';
-            btn.textContent = port.number;
+            btn.textContent = port.label || port.number || port.id;
 
             if (port.status === 'connected') {
                 btn.style.backgroundColor = '#2ecc71';
@@ -2582,7 +2582,11 @@ class UIManager {
         const targetNode = this.pendingConnectionTarget;
 
         const cableType = this.modalForms.connCableType.value;
-        const fibers = this.modalForms.connFibers.value;
+        let fibers = this.modalForms.connFibers.value;
+        if (!fibers || fibers === "") {
+            // Fallback to prevent DB error
+            fibers = (cableType && cableType.toUpperCase().includes('UTP')) ? '4' : '1';
+        }
         const sectionType = cableType === 'DROP' ? null : this.modalForms.connSectionType.value;
 
         // Add target as final point
@@ -2593,7 +2597,14 @@ class UIManager {
         const toPort = (targetNode.type === 'RACK' || (targetNode.rack && targetNode.rack.length > 0)) ? this.selectedTargetPort : null;
 
         // Port Compatibility Validation
-        const isFiberCable = cableType !== 'UTP';
+        const selectedCableDataType = this.cableTypes.find(t => t.name === cableType);
+        let isFiberCable = true; // Default assumption
+        if (selectedCableDataType) {
+            isFiberCable = selectedCableDataType.media_type === 'FIBRA';
+        } else {
+            // Fallback: check string content
+            isFiberCable = !cableType.toUpperCase().includes('UTP');
+        }
         const fiberPortTypes = ['SFP', 'SFP+', 'SC/APC', 'LC'];
 
         const validatePort = (node, portData, label) => {
@@ -2611,16 +2622,18 @@ class UIManager {
                 return false;
             }
 
-            const isFiberPort = fiberPortTypes.includes(port.type);
+            // Compatibility validation removed per user request
+            // const isFiberPort = fiberPortTypes.includes(port.type);
 
-            if (isFiberCable && !isFiberPort) {
-                alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) no es compatible con Fibra Óptica.`);
-                return false;
-            }
-            if (!isFiberCable && isFiberPort) {
-                alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) es de Fibra y no es compatible con cable UTP.`);
-                return false;
-            }
+            // if (isFiberCable && !isFiberPort) {
+            //     alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) no es compatible con Fibra Óptica.`);
+            //     return false;
+            // }
+            // if (!isFiberCable && isFiberPort) {
+            //     alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) es de Fibra y no es compatible con cable UTP.`);
+            //     return false;
+            // }
+            return true;
             return true;
         };
 
@@ -2847,7 +2860,7 @@ class UIManager {
         if (!equipment) return;
 
         this.portView.title.textContent = equipment.name;
-        this.portView.subtitle.textContent = `${equipment.type} - ${equipment.totalPorts} Puertos`;
+        this.portView.subtitle.textContent = `${equipment.type} - ${equipment.ports ? equipment.ports.length : 0} Puertos`;
 
         this.renderPortGrid(equipment);
         this.switchView('ports');
@@ -2861,7 +2874,7 @@ class UIManager {
             const portEl = document.createElement('div');
             portEl.className = 'port-item';
             portEl.style.position = 'relative';
-            portEl.textContent = port.number;
+            portEl.textContent = port.label || port.number || port.id;
 
             // Warning icon for reported ports
             if (port.reported) {
@@ -5542,8 +5555,11 @@ class UIManager {
         // Update Stats Summary (Top 4 favorites)
         if (this.inventoryUI.stats) {
             let statsHtml = '';
-            // Only show the first 4 favorites
-            const displayFavs = this.favoriteCategories.slice(0, 4);
+            // First block: Total Nodes. Following blocks: User Favorites (max 3)
+            const displayFavs = ['TOTAL_NODES'];
+            this.favoriteCategories.forEach(fav => {
+                if (displayFavs.length < 4) displayFavs.push(fav);
+            });
 
             displayFavs.forEach(fav => {
                 let countLabel = '0';
@@ -5686,7 +5702,7 @@ class UIManager {
         }
 
         // Save to localStorage
-        localStorage.setItem('ultranet_gifo_favs', JSON.stringify(this.favoriteCategories));
+        localStorage.setItem('ultranet_favorites', JSON.stringify(this.favoriteCategories));
         this.renderInventory();
     }
 
