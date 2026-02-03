@@ -722,6 +722,7 @@ class AdminManager {
                     <button class="btn-secondary" id="tab-users" onclick="window.adminManager.switchTab('users')">Usuarios</button>
                     <button class="btn-secondary" id="tab-node-types" onclick="window.adminManager.switchTab('node-types')">Tipos de Nodo</button>
                     <button class="btn-secondary" id="tab-cable-types" onclick="window.adminManager.switchTab('cable-types')">Tipos de Cable</button>
+                    <button class="btn-secondary" id="tab-lists" onclick="window.adminManager.switchTab('lists')">Gestión de Listas</button>
                 </div>
                 <div id="admin-content-projects" style="flex:1; overflow-y:auto;">
                      <div style="display:flex; gap:10px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
@@ -755,6 +756,12 @@ class AdminManager {
                         <button class="action-btn" style="background-color:#2ecc71; padding:5px; width:auto;" onclick="window.adminManager.openCreateCableTypeModal()">+ Nuevo Cable</button>
                      </div>
                      <div id="admin-cable-types-list"></div>
+                </div>
+                <div id="admin-content-lists" class="hidden" style="flex:1; overflow-y:auto;">
+                     <div style="padding: 20px; text-align: center;">
+                        <h4>Gestión de Listas</h4>
+                        <p>Funcionalidad en desarrollo...</p>
+                     </div>
                 </div>
             </div>
         </div>`;
@@ -886,11 +893,13 @@ class AdminManager {
         document.getElementById('admin-content-projects').classList.add('hidden');
         document.getElementById('admin-content-node-types').classList.add('hidden');
         document.getElementById('admin-content-cable-types').classList.add('hidden');
+        document.getElementById('admin-content-lists').classList.add('hidden');
         document.getElementById(`admin-content-${tab}`).classList.remove('hidden');
         document.getElementById('tab-users').className = tab === 'users' ? 'action-btn' : 'btn-secondary';
         document.getElementById('tab-projects').className = tab === 'projects' ? 'action-btn' : 'btn-secondary';
         document.getElementById('tab-node-types').className = tab === 'node-types' ? 'action-btn' : 'btn-secondary';
         document.getElementById('tab-cable-types').className = tab === 'cable-types' ? 'action-btn' : 'btn-secondary';
+        document.getElementById('tab-lists').className = tab === 'lists' ? 'action-btn' : 'btn-secondary';
         if (tab === 'users') this.refreshUsers();
         if (tab === 'projects') this.refreshProjects();
         if (tab === 'node-types') this.refreshNodeTypes();
