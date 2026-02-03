@@ -3,6 +3,18 @@
  * Main Application Logic
  */
 
+// Debug: Global click listener
+window.addEventListener('click', (e) => {
+    console.log('Global Click detected on:', e.target.tagName, 'ID:', e.target.id, 'Classes:', e.target.className);
+}, true);
+
+window.onerror = function (msg, url, line, col, error) {
+    console.error('GLOBAL ERROR:', msg, 'at', url, ':', line, ':', col);
+    return false;
+};
+
+console.log('🚀 SGIFO app.js v40 starting...');
+
 class MapManager {
     constructor(mapId) {
         this.defaultLocation = [4.6097, -74.0817]; // Bogota
@@ -74,7 +86,6 @@ class MapManager {
         // Custom icon based on type
         let iconColor = this.getColorForType(node.type);
 
-        // Check if node has connections
         const hasConnections = this.hasNodeConnections(node.id);
         const warningIcon = hasConnections ? '' : '<div style="position:absolute; top:-8px; right:-8px; font-size:12px;">⚠️</div>';
 
@@ -116,7 +127,8 @@ class MapManager {
 
         marker.bindTooltip(node.name, { permanent: false, direction: 'top' });
 
-        marker.on('click', () => {
+        marker.on('click', (e) => {
+            L.DomEvent.stopPropagation(e);
             document.dispatchEvent(new CustomEvent('marker:clicked', { detail: node.id }));
         });
 
@@ -194,20 +206,24 @@ class MapManager {
         let color = '#333';
         let weight = 3;
 
-        if (connection.cableType === 'DROP') {
+        const type = (connection.cableType || '').toUpperCase();
+        if (type.includes('DROP')) {
             color = '#e67e22'; // Orange for drops
             weight = 2;
-        } else if (connection.cableType === 'SUBTERRANEO') {
+        } else if (type.includes('SUBTERRANEO')) {
             color = '#8b4513'; // Brown for underground
-        } else if (connection.cableType === 'ADSS') {
-            color = '#333'; // Dark for aerial
+            weight = 4;
+        } else if (type.includes('UTP')) {
+            color = '#3498db'; // Blue for UTP
+        } else if (type.includes('ADSS') || type.includes('ASU') || type.includes('FIBRA')) {
+            color = '#333'; // Dark for main fiber
         }
 
         const polyline = L.polyline(connection.path, { color: color, weight: weight, opacity: 0.7 }).addTo(this.map);
 
-        // Make polyline clickable
-        polyline.on('click', () => {
-            document.dispatchEvent(new CustomEvent('connection:clicked', { detail: connection.id }));
+        polyline.on('click', (e) => {
+            L.DomEvent.stopPropagation(e);
+            document.dispatchEvent(new CustomEvent('connection:clicked', { detail: { id: connection.id, latlng: e.latlng } }));
         });
 
         this.connections[connection.id] = polyline;
@@ -240,14 +256,39 @@ class MapManager {
         });
     }
 
-    resetNetworkStyles() {
-        Object.values(this.connections).forEach(poly => {
-            // Reset to default style logic (simplified)
-            poly.setStyle({ color: '#333', weight: 3 });
+    resetNetworkStyles(inventoryManager) {
+        Object.keys(this.connections).forEach(id => {
+            const poly = this.connections[id];
+            let color = '#333';
+            let weight = 3;
+
+            if (inventoryManager) {
+                const conn = inventoryManager.getConnections().find(c => c.id === id);
+                if (conn) {
+                    const type = (conn.cableType || '').toUpperCase();
+                    if (type.includes('DROP')) {
+                        color = '#e67e22';
+                        weight = 2;
+                    } else if (type.includes('SUBTERRANEO')) {
+                        color = '#8b4513';
+                        weight = 4;
+                    } else if (type.includes('UTP')) {
+                        color = '#3498db';
+                    }
+                }
+            }
+            poly.setStyle({ color: color, weight: weight, opacity: 0.7 });
         });
         Object.values(this.markers).forEach(marker => {
             marker.setOpacity(1);
         });
+    }
+
+    highlightConnection(id) {
+        if (this.connections[id]) {
+            this.connections[id].setStyle({ color: '#f1c40f', weight: 6, opacity: 1 });
+            this.connections[id].bringToFront();
+        }
     }
 
     // Helper to calculate total distance of a path
@@ -283,6 +324,18 @@ class MapManager {
         nodes.forEach(node => {
             this.addMarker(node);
         });
+    }
+
+    refreshAllConnections(inventoryManager) {
+        const conns = inventoryManager.getConnections();
+        conns.forEach(conn => {
+            this.addConnection(conn);
+        });
+    }
+
+    refreshAll(inventoryManager) {
+        this.refreshAllMarkers(inventoryManager);
+        this.refreshAllConnections(inventoryManager);
     }
 }
 
@@ -335,6 +388,10 @@ class UserManager {
             this.createProjectModal.classList.remove('hidden');
         });
 
+        document.getElementById('btn-close-projects').addEventListener('click', () => {
+            this.projectModal.classList.add('hidden');
+        });
+
         document.getElementById('btn-cancel-create-project').addEventListener('click', () => {
             this.createProjectModal.classList.add('hidden');
             this.projectModal.classList.remove('hidden');
@@ -361,7 +418,8 @@ class UserManager {
             this.user = session.user;
             await this.loadProfile();
         } else {
-            this.showLogin();
+            // Don't force login, allow browsing
+            console.log('No active session, login required for admin features');
         }
 
         supabaseClient.auth.onAuthStateChange(async (event, session) => {
@@ -371,8 +429,8 @@ class UserManager {
             } else if (event === 'SIGNED_OUT') {
                 this.user = null;
                 this.profile = null;
-                this.showLogin();
-                // Reset UI?
+                // Don't auto-show login
+                alert('Sesión cerrada');
                 window.location.reload();
             }
         });
@@ -417,6 +475,7 @@ class UserManager {
             }
 
             this.profile = data;
+            this.hideLogin(); // Hide login modal after successful profile load
             this.updateHeader();
 
             // If Client, load specific view?
@@ -430,19 +489,29 @@ class UserManager {
 
         } catch (e) {
             console.error("Error loading profile", e);
+            // Don't force login on error
         }
     }
 
     updateHeader() {
+        console.log("Updating header for user:", this.user.email);
         const profileEl = document.querySelector('.user-profile span');
-        if (profileEl) {
+        const statusDot = document.querySelector('.status-dot');
+
+        if (statusDot) {
+            statusDot.classList.add('online');
+            statusDot.title = "Sistema JS Activo v40";
+        }
+
+        if (profileEl && this.profile) {
             profileEl.innerText = `${this.profile.role.toUpperCase()} | ${this.user.email}`;
         }
     }
 
     async loadProjects() {
         this.projectList.innerHTML = '<p class="empty-state">Cargando...</p>';
-        this.projectModal.classList.remove('hidden');
+        // Don't auto-open the modal anymore
+        // this.projectModal.classList.remove('hidden');
 
         // Hide Create Button for non-admins
         const btnCreate = document.getElementById('btn-create-project');
@@ -482,6 +551,16 @@ class UserManager {
 
             this.renderProjects(projects);
 
+            // Auto-select last project if exists
+            const lastId = localStorage.getItem('sgifo_selected_project_id');
+            if (lastId) {
+                const found = projects.find(p => p.id === lastId);
+                if (found) {
+                    console.log("Auto-selecting project:", found.name);
+                    this.selectProject(found);
+                }
+            }
+
         } catch (e) {
             console.error("Error loading projects", e);
             this.projectList.innerHTML = '<p class="empty-state" style="color:red">Error cargando proyectos.</p>';
@@ -490,20 +569,63 @@ class UserManager {
 
     renderProjects(projects) {
         this.projectList.innerHTML = '';
+
+        // Add a "New Project" button directly at the top of the list for better visibility
+        const addNewBtn = document.createElement('button');
+        addNewBtn.className = 'action-btn';
+        addNewBtn.style.marginBottom = '15px';
+        addNewBtn.innerHTML = '✨ + Nuevo Proyecto';
+        addNewBtn.onclick = () => {
+            this.projectModal.classList.add('hidden');
+            this.createProjectModal.classList.remove('hidden');
+        };
+        this.projectList.appendChild(addNewBtn);
+
         if (projects.length === 0) {
-            this.projectList.innerHTML = '<p class="empty-state">No hay proyectos disponibles.</p>';
+            const empty = document.createElement('p');
+            empty.className = 'empty-state';
+            empty.innerText = 'No hay proyectos disponibles.';
+            this.projectList.appendChild(empty);
             return;
         }
 
         projects.forEach(p => {
+            const isActive = this.currentProject && this.currentProject.id === p.id;
             const item = document.createElement('div');
-            item.className = 'nav-btn'; // Recycle style
-            item.style.padding = '10px';
-            item.style.marginBottom = '5px';
-            item.style.border = '1px solid #eee';
-            item.style.cursor = 'pointer';
-            item.innerHTML = `<strong>${p.name}</strong><br><small>${p.description || ''}</small>`;
-            item.addEventListener('click', () => this.selectProject(p));
+            item.className = 'inventory-card'; // Using inventory-card style for better look
+            item.style.marginBottom = '10px';
+            item.style.padding = '15px';
+            if (isActive) {
+                item.style.borderColor = 'var(--primary-color)';
+                item.style.backgroundColor = 'rgba(128, 0, 32, 0.05)';
+            }
+
+            item.innerHTML = `
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <div>
+                        <strong style="font-size:16px; color:var(--primary-dark)">${p.name}</strong>
+                        <p style="font-size:12px; color:#666; margin-top:4px;">${p.description || 'Sin descripción'}</p>
+                        ${isActive ? '<span class="badge" style="background:#2ecc71; margin-top:8px;">ACTIVO</span>' : ''}
+                    </div>
+                    <button class="action-btn deploy-btn" style="width:auto; padding:5px 15px; font-size:12px;">
+                        ${isActive ? 'Re-Desplegar' : 'Desplegar'}
+                    </button>
+                </div>
+            `;
+
+            // Clicking the card or the button selects/deploys the project
+            const btn = item.querySelector('.deploy-btn');
+            const doSelect = () => {
+                this.selectProject(p);
+            };
+            item.addEventListener('click', (e) => {
+                if (e.target !== btn) doSelect();
+            });
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                doSelect();
+            });
+
             this.projectList.appendChild(item);
         });
     }
@@ -528,7 +650,9 @@ class UserManager {
     }
 
     selectProject(project) {
+        const isChanging = !this.currentProject || this.currentProject.id !== project.id;
         this.currentProject = project;
+        localStorage.setItem('sgifo_selected_project_id', project.id);
         this.projectModal.classList.add('hidden');
 
         // Initialize Inventory with Project ID
@@ -539,15 +663,18 @@ class UserManager {
 
         // Delegate to UIManager/InventoryManager
         if (this.uiManager) {
-            this.uiManager.loadProject(project.id, this.profile.role);
-        }
-
-        // If Admin, show admin tools
-        if (this.profile.role === 'super-admin') {
-            // Maybe add a floating admin button or something?
-            // For now, let's rely on the header profile click or new buttons?
-            // Or better, inject an "Admin Panel" button in sidebar.
-            if (window.adminManager) window.adminManager.init();
+            this.uiManager.loadProject(project.id, this.profile.role).then(() => {
+                // After loading, do NOT fit map to nodes automatically
+                // This prevents the "stuck" feeling and allows the user to explore freely.
+                // The map will stay at its default location or last position.
+                // const nodes = this.uiManager.inventoryManager.getNodes();
+                // if (nodes.length > 0) {
+                //    const group = L.featureGroup(nodes.map(n => L.marker([n.lat, n.lng])));
+                //    this.uiManager.mapManager.map.fitBounds(group.getBounds(), { padding: [50, 50], maxZoom: 16 });
+                // }
+                // Refresh project list in background to update active state if panel opened again
+                this.loadProjects();
+            });
         }
     }
 }
@@ -570,23 +697,16 @@ class AdminManager {
     }
 
     createAdminButton() {
-        const nav = document.querySelector('.sidebar-nav');
-        if (!nav) return;
-        const btn = document.createElement('button');
-        btn.className = 'nav-btn';
-        btn.id = 'btn-admin-panel';
-        btn.style.marginTop = '20px';
-        btn.style.backgroundColor = '#2c3e50';
-        btn.style.color = 'white';
-        btn.style.transition = 'all 0.3s ease';
-        btn.innerHTML = '<span class="icon">⚙️</span> Panel Admin';
+        // Button is now in HTML, just attach the event listener
+        const btn = document.getElementById('btn-admin-panel');
+        if (!btn) return;
+
         btn.onclick = () => this.openAdminPanel();
+        btn.onmousedown = () => this.setLock(true);
 
         // Add hover effect
         btn.onmouseover = () => btn.style.backgroundColor = '#3498db';
         btn.onmouseout = () => btn.style.backgroundColor = '#2c3e50';
-
-        nav.appendChild(btn);
     }
 
     createAdminModal() {
@@ -595,15 +715,22 @@ class AdminManager {
             <div class="modal-content" style="max-width: 800px; height: 80vh; display:flex; flex-direction:column;">
                 <div style="display:flex; justify-content:space-between; margin-bottom:20px;">
                     <h3>Panel de Super Admin</h3>
-                    <button class="btn-secondary" onclick="document.getElementById('modal-admin-panel').classList.add('hidden')">Cerrar</button>
+                    <button class="btn-secondary" onclick="window.adminManager.closeAdminPanel()">Cerrar</button>
                 </div>
                 <div style="display:flex; gap:10px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
-                    <button class="action-btn" id="tab-users" onclick="window.adminManager.switchTab('users')">Usuarios</button>
-                    <button class="btn-secondary" id="tab-projects" onclick="window.adminManager.switchTab('projects')">Proyectos</button>
+                    <button class="action-btn" id="tab-projects" onclick="window.adminManager.switchTab('projects')">Mis Proyectos</button>
+                    <button class="btn-secondary" id="tab-users" onclick="window.adminManager.switchTab('users')">Usuarios</button>
                     <button class="btn-secondary" id="tab-node-types" onclick="window.adminManager.switchTab('node-types')">Tipos de Nodo</button>
                     <button class="btn-secondary" id="tab-cable-types" onclick="window.adminManager.switchTab('cable-types')">Tipos de Cable</button>
                 </div>
-                <div id="admin-content-users" style="flex:1; overflow-y:auto;">
+                <div id="admin-content-projects" style="flex:1; overflow-y:auto;">
+                     <div style="display:flex; gap:10px; margin-bottom:15px; border-bottom:1px solid #eee; padding-bottom:10px;">
+                        <button class="action-btn" style="padding:5px; width:auto; min-width:120px;" onclick="window.adminManager.refreshProjects()">🔄 Refrescar</button>
+                        <button class="action-btn" style="background-color:#2ecc71; padding:5px; width:auto; min-width:150px;" onclick="window.adminManager.openCreateProjectPrompt()">+ NUEVO PROYECTO</button>
+                     </div>
+                     <div id="admin-project-list"></div>
+                </div>
+                <div id="admin-content-users" class="hidden" style="flex:1; overflow-y:auto;">
                     <div style="display:flex; gap:10px; margin-bottom:10px;">
                         <button class="action-btn" style="padding:5px;" onclick="window.adminManager.refreshUsers()">🔄 Refrescar</button>
                         <button class="action-btn" style="background-color:#2ecc71; padding:5px;" onclick="window.adminManager.openCreateUserPrompt()">+ Nuevo Usuario</button>
@@ -614,10 +741,6 @@ class AdminManager {
                         </thead>
                         <tbody id="admin-user-list"></tbody>
                     </table>
-                </div>
-                <div id="admin-content-projects" class="hidden" style="flex:1; overflow-y:auto;">
-                     <button class="action-btn" style="margin-bottom:10px; padding:5px;" onclick="window.adminManager.refreshProjects()">🔄 Refrescar Proyectos</button>
-                     <div id="admin-project-list"></div>
                 </div>
                 <div id="admin-content-node-types" class="hidden" style="flex:1; overflow-y:auto;">
                      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
@@ -637,6 +760,17 @@ class AdminManager {
         </div>`;
         document.body.insertAdjacentHTML('beforeend', modalHtml);
         this.modal = document.getElementById('modal-admin-panel');
+    }
+
+    openCreateProjectPrompt() {
+        // Use userManager's modal but elevate it
+        if (window.userManager) {
+            const modal = window.userManager.createProjectModal;
+            if (modal) {
+                modal.style.zIndex = "3000"; // Above admin panel (2500)
+                modal.classList.remove('hidden');
+            }
+        }
     }
 
     async openCreateUserPrompt() {
@@ -671,9 +805,80 @@ class AdminManager {
         } catch (e) { alert("Error: " + e.message); }
     }
 
-    openAdminPanel() {
-        this.modal.classList.remove('hidden');
-        this.switchTab('users');
+    async openAdminPanel() {
+        console.log("Attempting to open Admin Panel...");
+        // Check if user is authenticated
+        if (!window.userManager || !window.userManager.user) {
+            console.log("No user found in userManager");
+            alert('Debes iniciar sesión para acceder al Panel Admin');
+            if (window.userManager) {
+                window.userManager.showLogin();
+            }
+            return;
+        }
+
+        const locked = await this.setLock(true);
+        if (locked) {
+            this.modal.classList.remove('hidden');
+            this.switchTab('projects');
+        }
+    }
+
+    async closeAdminPanel() {
+        await this.setLock(false);
+        this.modal.classList.add('hidden');
+    }
+
+    async setLock(locked) {
+        if (!window.inventoryManager.projectId) return true;
+
+        try {
+            const { data: { user } } = await supabaseClient.auth.getUser();
+            if (!user) return false;
+
+            if (locked) {
+                // Check if someone else has it
+                const { data: project } = await supabaseClient.from('projects')
+                    .select('admin_lock_user, admin_lock_timestamp')
+                    .eq('id', window.inventoryManager.projectId)
+                    .single();
+
+                if (project && project.admin_lock_user && project.admin_lock_user !== user.id) {
+                    const lockTime = new Date(project.admin_lock_timestamp);
+                    const diff = (new Date() - lockTime) / 1000 / 60;
+                    if (diff < 15) { // 15 mins lock
+                        alert("⚠️ Otro administrador está actualmente en el panel. Por favor espera a que termine.");
+                        return false;
+                    }
+                }
+
+                // Set lock
+                await supabaseClient.from('projects')
+                    .update({
+                        admin_lock_user: user.id,
+                        admin_lock_timestamp: new Date().toISOString()
+                    })
+                    .eq('id', window.inventoryManager.projectId);
+
+                // Keep-alive heartbeat
+                this.lockInterval = setInterval(async () => {
+                    await supabaseClient.from('projects')
+                        .update({ admin_lock_timestamp: new Date().toISOString() })
+                        .eq('id', window.inventoryManager.projectId);
+                }, 60000); // every minute
+
+            } else {
+                // Clear lock
+                if (this.lockInterval) clearInterval(this.lockInterval);
+                await supabaseClient.from('projects')
+                    .update({ admin_lock_user: null, admin_lock_timestamp: null })
+                    .eq('id', window.inventoryManager.projectId);
+            }
+            return true;
+        } catch (e) {
+            console.error("Error setting lock:", e);
+            return false;
+        }
     }
 
     switchTab(tab) {
@@ -742,16 +947,33 @@ class AdminManager {
             const { data: projects, error } = await supabaseClient.from('projects').select('*').order('created_at', { ascending: false });
             if (error) throw error;
             list.innerHTML = '';
+
+            const currentProjectId = window.userManager && window.userManager.currentProject ? window.userManager.currentProject.id : null;
+
             projects.forEach(p => {
+                const isActive = p.id === currentProjectId;
                 const div = document.createElement('div');
-                div.style.border = '1px solid #eee'; div.style.padding = '10px'; div.style.marginBottom = '10px';
-                div.style.borderRadius = '4px'; div.style.backgroundColor = '#fff';
+                div.style.border = '1px solid #eee';
+                div.style.padding = '15px';
+                div.style.marginBottom = '10px';
+                div.style.borderRadius = '8px';
+                div.style.backgroundColor = isActive ? 'rgba(46, 204, 113, 0.05)' : '#fff';
+                div.style.borderColor = isActive ? '#2ecc71' : '#eee';
+
                 div.innerHTML = `
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <strong>${p.name}</strong>
                         <div>
-                             <button class="btn-secondary" style="font-size:11px; padding:3px;" onclick="window.adminManager.manageProjectUsers('${p.id}', '${p.name}')">Usuarios</button>
-                             <button class="btn-danger" style="font-size:11px; padding:3px;" onclick="window.adminManager.deleteProject('${p.id}')">Eliminar</button>
+                            <strong style="font-size:16px;">${p.name}</strong>
+                            ${isActive ? '<span style="background:#2ecc71; color:white; font-size:10px; padding:2px 6px; border-radius:10px; margin-left:10px; font-weight:bold;">ACTIVO</span>' : ''}
+                            <div style="font-size:12px; color:#666; margin-top:4px;">${p.description || 'Sin descripción'}</div>
+                        </div>
+                        <div style="display:flex; gap:8px;">
+                             <button class="action-btn" style="width:auto; padding:5px 12px; font-size:12px; background-color:${isActive ? '#3498db' : 'var(--primary-color)'}" 
+                                onclick="window.userManager.selectProject(${JSON.stringify(p).replace(/"/g, '&quot;')}); window.adminManager.closeAdminPanel();">
+                                ${isActive ? 'Re-Desplegar' : 'Desplegar'}
+                             </button>
+                             <button class="btn-secondary" style="font-size:12px; padding:5px 10px;" onclick="window.adminManager.manageProjectUsers('${p.id}', '${p.name}')">Usuarios</button>
+                             <button class="btn-danger" style="font-size:12px; padding:5px 10px;" onclick="window.adminManager.deleteProject('${p.id}')">Eliminar</button>
                         </div>
                     </div>`;
                 list.appendChild(div);
@@ -1011,7 +1233,7 @@ class AdminManager {
                 <h3>${title}</h3>
                 <div class="form-group">
                     <label class="form-label">Nombre del Cable</label>
-                    <input type="text" id="ct-name" class="form-input" placeholder="Ej: ADSS 12H G.652D" value="${this.newCableType.name}">
+                    <input type="text" id="ct-name" class="form-input" placeholder="Ej: ADSS FIBRA" value="${this.newCableType.name}">
                 </div>
                 <div style="display:flex; gap:10px;">
                     <div class="form-group" style="flex:1">
@@ -1101,6 +1323,33 @@ class InventoryManager {
         this.nodes = [];
         this.connections = [];
         this.projectId = null;
+    }
+
+    async checkAdminLock() {
+        if (!this.projectId) return false;
+        try {
+            const { data, error } = await supabaseClient
+                .from('projects')
+                .select('admin_lock_user, admin_lock_timestamp')
+                .eq('id', this.projectId)
+                .single();
+
+            if (error || !data || !data.admin_lock_user) return false;
+
+            const lockTime = new Date(data.admin_lock_timestamp);
+            const now = new Date();
+            const diff = (now - lockTime) / 1000 / 60; // minutes
+
+            if (diff < 15) { // Same timeout as AdminManager
+                const { data: { user } } = await supabaseClient.auth.getUser();
+                if (user && user.id !== data.admin_lock_user) {
+                    return true;
+                }
+            }
+        } catch (e) {
+            console.error("Lock check failed:", e);
+        }
+        return false;
     }
 
     async init(projectId) {
@@ -1205,6 +1454,14 @@ class InventoryManager {
 
     // Nodes
     async addNode(node) {
+        if (!this.projectId) {
+            alert("No hay un proyecto activo. Por favor selecciona o crea un proyecto primero.");
+            return null;
+        }
+        if (await this.checkAdminLock()) {
+            alert("⚠️ No se puede agregar el nodo: Un administrador está realizando cambios en el panel administrativo.");
+            return null;
+        }
         // Ensure rack property exists
         if (!node.rack) node.rack = [];
         // Ensure splitters property exists for MUFLA and NAP nodes
@@ -1219,6 +1476,7 @@ class InventoryManager {
                 id: node.id,
                 type: node.type,
                 name: node.name,
+                reserve: node.reserve || 0,
                 lat: node.lat,
                 lng: node.lng,
                 rack: node.rack || [],
@@ -1251,6 +1509,10 @@ class InventoryManager {
     }
 
     async updateNode(updatedNode) {
+        if (await this.checkAdminLock()) {
+            alert("⚠️ No se puede actualizar el nodo: Un administrador está realizando cambios en el panel administrativo.");
+            return;
+        }
         const index = this.nodes.findIndex(n => n.id === updatedNode.id);
         if (index !== -1) {
             // Optimistic update
@@ -1262,6 +1524,7 @@ class InventoryManager {
                 const nodeData = {
                     type: updatedNode.type,
                     name: updatedNode.name,
+                    reserve: updatedNode.reserve || 0,
                     lat: updatedNode.lat,
                     lng: updatedNode.lng,
                     rack: updatedNode.rack || [],
@@ -1287,6 +1550,10 @@ class InventoryManager {
     }
 
     async deleteNode(id) {
+        if (await this.checkAdminLock()) {
+            alert("⚠️ No se puede eliminar el nodo: Un administrador está realizando cambios en el panel administrativo.");
+            return;
+        }
         const originalNodes = [...this.nodes];
         const originalConnections = [...this.connections];
 
@@ -1315,7 +1582,15 @@ class InventoryManager {
     }
 
     // Connections
-    async addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort, sectionType) {
+    async addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort, sectionType, identification) {
+        if (!this.projectId) {
+            alert("No hay un proyecto activo. Por favor selecciona o crea un proyecto primero.");
+            return null;
+        }
+        if (await this.checkAdminLock()) {
+            alert("⚠️ No se puede crear la conexión: Un administrador está realizando cambios en el panel administrativo.");
+            return null;
+        }
         const newConnection = {
             id: Date.now().toString(),
             from: fromId,
@@ -1326,6 +1601,7 @@ class InventoryManager {
             fibers: fibers,
             fromPort: fromPort || null, // { equipId, portId } for RACK nodes
             toPort: toPort || null,      // { equipId, portId } for RACK nodes
+            identification: identification || null,
             fiberDetails: this.initializeFiberDetails(parseInt(fibers)), // Initialize fiber array
             project_id: this.projectId
         };
@@ -1407,17 +1683,109 @@ class InventoryManager {
     }
 
     async deleteConnection(id) {
-        const originalConnections = [...this.connections];
-        this.connections = this.connections.filter(c => c.id !== id);
-
-        try {
-            const { error } = await supabaseClient.from('connections').delete().eq('id', id);
-            if (error) throw error;
-        } catch (e) {
-            console.error('Supabase Error deleting connection:', e);
-            alert('Error eliminando conexión de la base de datos.');
-            this.connections = originalConnections;
+        if (await this.checkAdminLock()) {
+            alert("⚠️ No se puede eliminar la conexión: Un administrador está realizando cambios en el panel administrativo.");
+            return;
         }
+        const index = this.connections.findIndex(c => c.id === id);
+        if (index !== -1) {
+            this.connections.splice(index, 1);
+            try {
+                const { error } = await supabaseClient.from('connections').delete().eq('id', id);
+                if (error) throw error;
+            } catch (e) {
+                console.error('Error deleting connection:', e);
+            }
+        }
+    }
+
+    async splitConnection(connectionId, newNodeId, splitLatLng) {
+        if (await this.checkAdminLock()) return null;
+
+        const original = this.connections.find(c => c.id === connectionId);
+        if (!original) return null;
+
+        const newNode = this.getNode(newNodeId);
+        if (!newNode) return null;
+
+        // Find closest point in path to split point
+        let closestIdx = 0;
+        let minDist = Infinity;
+        original.path.forEach((p, idx) => {
+            const d = L.latLng(p[0], p[1]).distanceTo(L.latLng(splitLatLng.lat, splitLatLng.lng));
+            if (d < minDist) {
+                minDist = d;
+                closestIdx = idx;
+            }
+        });
+
+        // Split paths
+        const path1 = original.path.slice(0, closestIdx + 1);
+        path1.push([newNode.lat, newNode.lng]);
+
+        const path2 = [[newNode.lat, newNode.lng]];
+        path2.push(...original.path.slice(closestIdx));
+
+        // Create new connections
+        const conn1 = await this.addConnection(
+            original.from, newNodeId, path1,
+            original.cableType, original.fibers,
+            original.fromPort, null, original.sectionType
+        );
+
+        const conn2 = await this.addConnection(
+            newNodeId, original.to, path2,
+            original.cableType, original.fibers,
+            null, original.toPort, original.sectionType
+        );
+
+        // Delete original
+        await this.deleteConnection(connectionId);
+
+        return { conn1, conn2 };
+    }
+
+    // This is a helper for when splitting isn't used, but nodes are near a cable
+    getIntermediateReserves(connection) {
+        let total = 0;
+        const radius = 10; // 10 meters tolerance
+
+        this.nodes.forEach(node => {
+            // Skip endpoints
+            if (node.id === connection.from || node.id === connection.to) return;
+
+            // Basic proximity check: is the node close to any point in the path or segment?
+            const nodeLatLng = L.latLng(node.lat, node.lng);
+            let isNear = false;
+
+            for (let i = 0; i < connection.path.length - 1; i++) {
+                const p1 = L.latLng(connection.path[i][0], connection.path[i][1]);
+                const p2 = L.latLng(connection.path[i + 1][0], connection.path[i + 1][1]);
+
+                // Leaflet GeometryUtil or similar would be better, but we do a simple check
+                // for distance to segment
+                const dist = this._distToSegment(nodeLatLng, p1, p2);
+                if (dist <= radius) {
+                    isNear = true;
+                    break;
+                }
+            }
+
+            if (isNear) {
+                total += parseFloat(node.reserve || 0);
+            }
+        });
+
+        return total;
+    }
+
+    _distToSegment(p, v, w) {
+        const l2 = v.distanceTo(w) * v.distanceTo(w);
+        if (l2 === 0) return p.distanceTo(v);
+        let t = ((p.lat - v.lat) * (w.lat - v.lat) + (p.lng - v.lng) * (w.lng - v.lng)) / l2;
+        t = Math.max(0, Math.min(1, t));
+        const projection = L.latLng(v.lat + t * (w.lat - v.lat), v.lng + t * (w.lng - v.lng));
+        return p.distanceTo(projection);
     }
 
     async updateConnection(updatedConnection) {
@@ -1448,15 +1816,35 @@ class InventoryManager {
         if (node) {
             if (!node.rack) node.rack = [];
 
-            // Initialize ports
+            // Initialize ports based on groups if available
             equipment.ports = [];
-            for (let i = 1; i <= parseInt(equipment.totalPorts); i++) {
-                equipment.ports.push({
-                    id: `${equipment.id}-p${i}`,
-                    number: i,
-                    status: 'free',
-                    connectedTo: null
+            let globalPortIndex = 1;
+
+            if (equipment.portGroups && equipment.portGroups.length > 0) {
+                equipment.portGroups.forEach(group => {
+                    for (let i = 1; i <= parseInt(group.qty); i++) {
+                        equipment.ports.push({
+                            id: `${equipment.id}-p${globalPortIndex}`,
+                            number: globalPortIndex,
+                            type: group.type,
+                            status: 'free',
+                            connectedTo: null
+                        });
+                        globalPortIndex++;
+                    }
                 });
+                equipment.totalPorts = globalPortIndex - 1;
+            } else {
+                // Backward compatibility / Default
+                for (let i = 1; i <= parseInt(equipment.totalPorts || 0); i++) {
+                    equipment.ports.push({
+                        id: `${equipment.id}-p${i}`,
+                        number: i,
+                        type: 'Generic',
+                        status: 'free',
+                        connectedTo: null
+                    });
+                }
             }
 
             node.rack.push(equipment);
@@ -1625,6 +2013,8 @@ class UIManager {
         this.patchingSource = null; // { equipId, portId }
         this.currentRackNodeId = null;
         this.currentEquipmentId = null;
+        this.pendingSplitConnectionId = null;
+        this._originalBtnText = { connect: '', tenderCable: '' };
 
         // DOM Elements
         this.views = {
@@ -1650,6 +2040,8 @@ class UIManager {
 
         this.connectionDetails = {
             title: document.getElementById('connection-detail-title'),
+            identification: document.getElementById('conn-id-display'),
+            identificationRow: document.getElementById('conn-id-row'),
             fromName: document.getElementById('conn-from-name'),
             toName: document.getElementById('conn-to-name'),
             cableType: document.getElementById('conn-cable-type-display'),
@@ -1657,6 +2049,8 @@ class UIManager {
             sectionTypeRow: document.getElementById('conn-section-type-row'),
             fibers: document.getElementById('conn-fibers-display'),
             distance: document.getElementById('conn-distance-display'),
+            reserve: document.getElementById('conn-total-reserve-display'),
+            total: document.getElementById('conn-total-length-display'),
             btnEdit: document.getElementById('btn-edit-connection'),
             btnMapPorts: document.getElementById('btn-map-to-ports'),
             btnDelete: document.getElementById('btn-delete-connection'),
@@ -1669,6 +2063,7 @@ class UIManager {
             form: document.getElementById('add-node-form'),
             type: document.getElementById('node-type'),
             name: document.getElementById('node-name'),
+            reserve: document.getElementById('node-reserve'),
             lat: document.getElementById('node-lat'),
             lng: document.getElementById('node-lng'),
             preview: document.getElementById('location-preview'),
@@ -1682,6 +2077,7 @@ class UIManager {
             name: document.getElementById('detail-name'),
             type: document.getElementById('detail-type'),
             coords: document.getElementById('detail-coords'),
+            reserve: document.getElementById('detail-reserve'),
             extraInfo: document.getElementById('detail-extra-info'),
             btnConnect: document.getElementById('btn-start-connection'),
             btnReport: document.getElementById('btn-report-damage'),
@@ -1728,6 +2124,7 @@ class UIManager {
 
         this.modalForms = {
             connection: document.getElementById('form-connection'),
+            connIdentification: document.getElementById('conn-identification'),
             equipment: document.getElementById('form-equipment'),
             connCableType: document.getElementById('conn-cable-type'),
             connSectionType: document.getElementById('conn-section-type'),
@@ -1737,7 +2134,10 @@ class UIManager {
 
             equipName: document.getElementById('equip-name'),
             equipType: document.getElementById('equip-type'),
-            equipPorts: document.getElementById('equip-ports'),
+            equipPortsData: document.getElementById('equip-ports-data'),
+            equipPortsList: document.getElementById('equip-ports-list'),
+            equipPortType: document.getElementById('eq-pt-type'),
+            equipPortQty: document.getElementById('eq-pt-qty'),
             equipIsProvider: document.getElementById('equip-is-provider'),
             equipProviderGroup: document.getElementById('equip-provider-group'),
             btnCancelConn: document.getElementById('btn-cancel-conn'),
@@ -1868,10 +2268,14 @@ class UIManager {
             container: document.getElementById('inventory-container'),
             btnGrid: document.getElementById('btn-inventory-grid'),
             btnList: document.getElementById('btn-inventory-list'),
-            btnClose: document.getElementById('btn-close-inventory-main')
+            btnClose: document.getElementById('btn-close-inventory-main'),
+            filterAll: document.getElementById('inv-filter-all'),
+            filterNodes: document.getElementById('inv-filter-nodes'),
+            filterConns: document.getElementById('inv-filter-conns')
         };
         this.inventoryDisplayMode = 'grid'; // 'grid' or 'list'
         this.inventorySearchQuery = '';
+        this.inventoryTypeFilter = 'all'; // 'all', 'node', 'connection'
         this.inventoryViewMode = 'summary'; // 'summary' or 'category'
         this.currentInventoryCategory = null; // e.g., 'NAP', 'ASU'
         this.currentInventoryType = null; // 'node' or 'connection'
@@ -1887,9 +2291,9 @@ class UIManager {
     }
 
     async init() {
-        // Wait for User Manager to load project
-        // Logic moved to loadProject
+        // Setup listeners that don't depend on project
         this.setupEventListeners();
+        this.setupNavigationButtons();
     }
 
     async loadProject(projectId, userRole) {
@@ -1926,9 +2330,12 @@ class UIManager {
     }
 
     switchView(viewName) {
-        Object.values(this.views).forEach(el => {
-            el.classList.remove('active');
-            el.classList.add('hidden');
+        Object.keys(this.views).forEach(key => {
+            const el = this.views[key];
+            if (el) {
+                el.classList.remove('active');
+                el.classList.add('hidden');
+            }
         });
 
         const view = this.views[viewName];
@@ -1966,6 +2373,7 @@ class UIManager {
         // Add Node
         document.getElementById('btn-add-node').addEventListener('click', () => this.startAddNodeFlow());
         document.getElementById('btn-cancel-add').addEventListener('click', () => this.cancelAddNode());
+        document.getElementById('btn-tender-cable').addEventListener('click', () => this.startStandaloneCablingFlow());
         document.getElementById('btn-locate-me').addEventListener('click', () => this.mapManager.locateUser());
 
         // Toggle Client Fields and Dynamic Fields
@@ -2016,6 +2424,22 @@ class UIManager {
                 this.completeConnection(e.detail);
             } else {
                 this.showNodeDetails(e.detail);
+            }
+        });
+
+        document.addEventListener('connection:clicked', (e) => {
+            const connId = e.detail.id;
+            const latlng = e.detail.latlng;
+
+            if (this.isAddingNode) {
+                // Feature: Insert node into cable (Stay in 'add' view)
+                this.pendingSplitConnectionId = connId;
+                this.setFormLocation(latlng);
+                console.log("Adding node into cable:", this.pendingSplitConnectionId);
+            } else if (this.isConnecting && this.connectionSourceId !== null) {
+                // waypoint handled by map:clicked
+            } else {
+                this.showConnectionDetails(connId);
             }
         });
 
@@ -2179,12 +2603,13 @@ class UIManager {
         this.mappingModal.btnCancel.addEventListener('click', () => this.mappingModal.modal.classList.add('hidden'));
         this.mappingModal.btnSave.addEventListener('click', () => this.saveFiberMapping());
 
-        // Connection click event
-        document.addEventListener('connection:clicked', (e) => {
-            this.showConnectionDetails(e.detail);
-        });
 
-        // Rack Port Selection Actions
+        const btnAddEqPort = document.getElementById('btn-add-eq-port-group');
+        if (btnAddEqPort) {
+            btnAddEqPort.addEventListener('click', () => this.addPortGroupToEquipField());
+        }
+
+        // Connection Details Actions
         this.rackPortSelectUI.btnCancel.addEventListener('click', () => this.closeRackPortSelect());
         this.rackPortSelectUI.btnBack.addEventListener('click', () => this.rackPortSelectGoToStep1());
 
@@ -2207,6 +2632,27 @@ class UIManager {
         this.splitterModals.btnFiberBack1.addEventListener('click', () => this.fiberConnGoToStep1());
         this.splitterModals.btnFiberBack2.addEventListener('click', () => this.fiberConnGoToStep2());
         this.splitterModals.fiberDestNode.addEventListener('change', () => this.handleFiberDestNodeChange());
+
+        // Inventory Filters
+        const setInvFilter = (type) => {
+            this.inventoryTypeFilter = type;
+            document.querySelectorAll('.inv-filter-btn').forEach(btn => {
+                btn.style.background = 'transparent';
+                btn.style.fontWeight = 'normal';
+            });
+            const activeBtn = type === 'all' ? this.inventoryUI.filterAll :
+                type === 'node' ? this.inventoryUI.filterNodes :
+                    this.inventoryUI.filterConns;
+            if (activeBtn) {
+                activeBtn.style.background = '#fff';
+                activeBtn.style.fontWeight = 'bold';
+            }
+            this.renderInventory();
+        };
+
+        if (this.inventoryUI.filterAll) this.inventoryUI.filterAll.addEventListener('click', () => setInvFilter('all'));
+        if (this.inventoryUI.filterNodes) this.inventoryUI.filterNodes.addEventListener('click', () => setInvFilter('node'));
+        if (this.inventoryUI.filterConns) this.inventoryUI.filterConns.addEventListener('click', () => setInvFilter('connection'));
 
         console.log('Event listeners set up successfully.');
     }
@@ -2252,6 +2698,28 @@ class UIManager {
 
         this.modalForms.equipType.dispatchEvent(new Event('change'));
         this.modalForms.equipIsProvider.checked = false;
+
+        // Reset Port Groups
+        this.modalForms.equipPortsData.value = "[]";
+        this.modalForms.equipPortsList.innerHTML = "";
+    }
+
+    addPortGroupToEquipField() {
+        const type = this.modalForms.equipPortType.value;
+        const qty = parseInt(this.modalForms.equipPortQty.value);
+        if (!qty || qty <= 0) return;
+
+        let groups = JSON.parse(this.modalForms.equipPortsData.value || "[]");
+        groups.push({ type, qty });
+        this.modalForms.equipPortsData.value = JSON.stringify(groups);
+
+        // Update list UI
+        const tag = document.createElement('span');
+        tag.style = 'display:inline-block; background:#fff; border:1px solid #ccc; padding:2px 5px; margin:2px; border-radius:3px; font-size:10px;';
+        tag.textContent = `${qty}x ${type}`;
+        this.modalForms.equipPortsList.appendChild(tag);
+
+        this.modalForms.equipPortQty.value = "";
     }
 
 
@@ -2290,7 +2758,8 @@ class UIManager {
         const newNode = {
             id: Date.now().toString(),
             type: this.form.type.value,
-            name: this.form.name.value,
+            name: this.form.name.value.trim(),
+            reserve: parseFloat(this.form.reserve.value) || 0,
             lat: parseFloat(this.form.lat.value),
             lng: parseFloat(this.form.lng.value),
             rack: [] // Initialize empty rack
@@ -2348,7 +2817,18 @@ class UIManager {
         const addedNode = await this.inventoryManager.addNode(newNode);
 
         if (addedNode) {
+            // Handle Split if necessary
+            if (this.pendingSplitConnectionId) {
+                await this.inventoryManager.splitConnection(this.pendingSplitConnectionId, addedNode.id, this.tempLocation);
+                this.pendingSplitConnectionId = null;
+                // Important: refresh selectable connections on map
+                this.mapManager.refreshAllConnections(this.inventoryManager);
+            }
+
             this.mapManager.addMarker(addedNode);
+            this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to show new segments
+            this.mapManager.resetNetworkStyles();
+
             this.isAddingNode = false;
             this.tempLocation = null;
             this.switchView('list');
@@ -2385,23 +2865,92 @@ class UIManager {
     }
 
     // --- Connection Flow ---
-    startConnectionFlow() {
-        this.isConnecting = true;
-        this.connectionSourceId = this.currentNodeId;
-        const sourceNode = this.inventoryManager.getNode(this.connectionSourceId);
-        this.connectionWaypoints = [[sourceNode.lat, sourceNode.lng]]; // Start at source
+    async startStandaloneCablingFlow() {
+        if (await this.inventoryManager.checkAdminLock()) {
+            alert("⚠️ No se puede iniciar el tendido: Un administrador está realizando cambios.");
+            return;
+        }
 
-        // Visual feedback
+        this.isConnecting = true;
+        this.connectionSourceId = null;
+        this.connectionWaypoints = [];
+        this.selectedSourcePort = null;
+        this.selectedTargetPort = null;
+        this.mapManager.clearTempPolyline();
+
+        const btn = document.getElementById('btn-tender-cable');
+        this._originalBtnText.tenderCable = btn.textContent;
+        btn.textContent = "Modo Trazado Libre (Esc)";
+        btn.disabled = true;
+
+        this.addStandaloneClosureUI();
+
+        alert("Tendido Libre Activo:\n1. Haz clic en el mapa para iniciar y agregar puntos.\n2. Usa 'Finalizar Aquí' para terminar.");
+    }
+
+    startConnectionFlow() {
+        if (!this.currentNodeId) return;
+        const node = this.inventoryManager.getNode(this.currentNodeId);
+        if (!node) return;
+
+        this.isConnecting = true;
+        this.connectionSourceId = node.id;
+        this.connectionWaypoints = [[node.lat, node.lng]];
+        this.selectedSourcePort = null;
+        this.selectedTargetPort = null;
+        this.mapManager.clearTempPolyline();
+
         const btn = this.details.btnConnect;
+        this._originalBtnText.connect = btn.textContent;
         btn.textContent = "Modo Trazado (Esc para cancelar)";
         btn.disabled = true;
 
-        alert("Modo Trazado Activo:\n1. Haz clic en el mapa para agregar puntos de quiebre.\n2. Haz clic en el nodo destino para finalizar.");
+        // Add standalone closure button
+        this.addStandaloneClosureUI();
+
+        alert("Modo Trazado Activo:\n1. Haz clic en el mapa para agregar puntos de quiebre.\n2. Haz clic en el nodo destino para finalizar.\n3. O usa el botón 'Finalizar Aquí' para un tramo sin nodo.");
+    }
+
+    addStandaloneClosureUI() {
+        let btn = document.getElementById('btn-finish-standalone');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.id = 'btn-finish-standalone';
+            btn.className = 'action-btn';
+            btn.style.position = 'fixed';
+            btn.style.bottom = '20px';
+            btn.style.left = '50%';
+            btn.style.transform = 'translateX(-50%)';
+            btn.style.zIndex = '1000';
+            btn.style.boxShadow = '0 4px 12px rgba(0,0,0,0.2)';
+            btn.innerHTML = '🏁 Finalizar Cable Aquí';
+            btn.onclick = () => this.completeStandaloneConnection();
+            document.body.appendChild(btn);
+        }
+        btn.classList.remove('hidden');
+    }
+
+    removeStandaloneClosureUI() {
+        const btn = document.getElementById('btn-finish-standalone');
+        if (btn) btn.classList.add('hidden');
+    }
+
+    completeStandaloneConnection() {
+        if (!this.isConnecting || this.connectionWaypoints.length < 1) return;
+        this.completeConnection(null);
     }
 
     addConnectionWaypoint(latlng) {
+        if (!this.isConnecting) return;
         this.connectionWaypoints.push([latlng.lat, latlng.lng]);
-        this.mapManager.updateTempPolyline(this.connectionWaypoints);
+
+        // If it's a standalone cabling and it's the first point, we just started
+        if (this.connectionSourceId === null && this.connectionWaypoints.length === 1) {
+            // No line to draw yet, just the first point is recorded.
+            // The temp polyline will start drawing from the second point.
+        } else {
+            this.mapManager.updateTempPolyline(this.connectionWaypoints);
+        }
     }
 
     completeConnection(targetNodeId) {
@@ -2409,36 +2958,68 @@ class UIManager {
         console.log('isConnecting:', this.isConnecting);
         console.log('connectionSourceId:', this.connectionSourceId);
 
-        if (!this.isConnecting || !this.connectionSourceId) return;
+        if (!this.isConnecting || (this.connectionSourceId === null && this.connectionWaypoints.length < 1)) return; // For standalone, need at least one point
 
-        if (targetNodeId === this.connectionSourceId) {
+        this.removeStandaloneClosureUI();
+
+        if (targetNodeId && targetNodeId === this.connectionSourceId) {
             alert("No puedes conectar un nodo consigo mismo.");
+            this.cancelConnectionFlow(); // Reset state
             return;
         }
 
-        const sourceNode = this.inventoryManager.getNode(this.connectionSourceId);
-        const targetNode = this.inventoryManager.getNode(targetNodeId);
+        const sourceNode = this.connectionSourceId ? this.inventoryManager.getNode(this.connectionSourceId) : null;
+        const targetNode = targetNodeId ? this.inventoryManager.getNode(targetNodeId) : null;
 
         console.log('Source Node:', sourceNode);
         console.log('Target Node:', targetNode);
 
-        if (sourceNode && targetNode) {
-            this.pendingConnectionTarget = targetNode;
+        // If source is null (standalone cabling), and no waypoints, it's an invalid state.
+        if (this.connectionSourceId === null && this.connectionWaypoints.length === 0) {
+            alert("No se han agregado puntos para el tendido libre.");
+            this.cancelConnectionFlow();
+            return;
+        }
+
+        // If source is null and target is null, it's a standalone cable with no end node.
+        // The last waypoint becomes the "end" of the cable.
+        if (this.connectionSourceId === null && targetNode === null && this.connectionWaypoints.length > 0) {
+            this.pendingConnectionTarget = null; // Explicitly set to null for standalone
+            this.showConnectionModal();
+            return;
+        }
+
+
+        if (sourceNode || targetNode) { // At least one end is a node
+            this.pendingConnectionTarget = targetNode; // Can be null now
 
             // Check if source or target is a RACK
-            // Any node with equipment/rack content or custom ports behaves like a RACK
-            const sourceHasPorts = sourceNode.rack && sourceNode.rack.length > 0;
-            const targetHasPorts = targetNode.rack && targetNode.rack.length > 0;
+            const sourceHasPorts = sourceNode && sourceNode.rack && sourceNode.rack.length > 0;
+            const targetHasPorts = targetNode && targetNode.rack && targetNode.rack.length > 0;
 
             if (sourceHasPorts || targetHasPorts) {
                 console.log('Rack connection detected');
-                // Need to select ports
-                this.handleRackConnection(sourceNode, targetNode);
+                if (sourceHasPorts && targetHasPorts) {
+                    this.handleRackConnection(sourceNode, targetNode);
+                } else if (sourceHasPorts) {
+                    // Standalone from a rack: only select source port
+                    this.openRackPortSelect(sourceNode.id, true, () => {
+                        this.showConnectionModal();
+                    });
+                } else if (targetHasPorts) {
+                    // Standalone to a rack: only select target port
+                    this.openRackPortSelect(targetNode.id, false, () => {
+                        this.showConnectionModal();
+                    });
+                }
             } else {
-                console.log('Normal connection');
-                // Normal connection
+                console.log('Normal connection (no rack ports involved)');
                 this.showConnectionModal();
             }
+        } else {
+            // This case should be handled by the `if (this.connectionSourceId === null && targetNode === null)` block above
+            // but as a fallback, if somehow we get here without source/target nodes, just show modal.
+            this.showConnectionModal();
         }
     }
 
@@ -2576,94 +3157,52 @@ class UIManager {
     }
 
     async finalizeConnection() {
-        if (!this.pendingConnectionTarget || !this.connectionSourceId) return;
+        if (this.isConnecting && this.connectionSourceId === null && this.connectionWaypoints.length < 1) {
+            alert("Agrega al menos un punto para el tendido libre.");
+            return;
+        }
+        if (this.isConnecting && this.connectionSourceId !== null && this.connectionWaypoints.length < 2) {
+            alert("Agrega al menos un punto de quiebre o un nodo destino.");
+            return;
+        }
 
-        const sourceNode = this.inventoryManager.getNode(this.connectionSourceId);
+        const sourceNode = this.connectionSourceId ? this.inventoryManager.getNode(this.connectionSourceId) : null;
         const targetNode = this.pendingConnectionTarget;
 
+        const identification = this.modalForms.connIdentification.value.trim();
         const cableType = this.modalForms.connCableType.value;
         let fibers = this.modalForms.connFibers.value;
         if (!fibers || fibers === "") {
-            // Fallback to prevent DB error
             fibers = (cableType && cableType.toUpperCase().includes('UTP')) ? '4' : '1';
         }
         const sectionType = cableType === 'DROP' ? null : this.modalForms.connSectionType.value;
 
-        // Add target as final point
-        this.connectionWaypoints.push([targetNode.lat, targetNode.lng]);
-
-        // Determine port info
-        const fromPort = (sourceNode.type === 'RACK' || (sourceNode.rack && sourceNode.rack.length > 0)) ? this.selectedSourcePort : null;
-        const toPort = (targetNode.type === 'RACK' || (targetNode.rack && targetNode.rack.length > 0)) ? this.selectedTargetPort : null;
-
-        // Port Compatibility Validation
-        const selectedCableDataType = this.cableTypes.find(t => t.name === cableType);
-        let isFiberCable = true; // Default assumption
-        if (selectedCableDataType) {
-            isFiberCable = selectedCableDataType.media_type === 'FIBRA';
-        } else {
-            // Fallback: check string content
-            isFiberCable = !cableType.toUpperCase().includes('UTP');
+        // If not standalone, add target as final point
+        if (targetNode && this.connectionWaypoints[this.connectionWaypoints.length - 1][0] !== targetNode.lat) {
+            this.connectionWaypoints.push([targetNode.lat, targetNode.lng]);
         }
-        const fiberPortTypes = ['SFP', 'SFP+', 'SC/APC', 'LC'];
-
-        const validatePort = (node, portData, label) => {
-            if (!portData) return true; // No port selected, skip validation
-
-            const equip = node.rack?.find(e => e.id === portData.equipId);
-            if (!equip?.ports) {
-                alert(`⚠️ Error: El equipo no tiene puertos configurados.`);
-                return false;
-            }
-
-            const port = equip.ports.find(p => p.id === portData.portId);
-            if (!port?.type) {
-                alert(`⚠️ Error en ${label}: El puerto no tiene tipo definido. Por favor configura los puertos del equipo.`);
-                return false;
-            }
-
-            // Compatibility validation removed per user request
-            // const isFiberPort = fiberPortTypes.includes(port.type);
-
-            // if (isFiberCable && !isFiberPort) {
-            //     alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) no es compatible con Fibra Óptica.`);
-            //     return false;
-            // }
-            // if (!isFiberCable && isFiberPort) {
-            //     alert(`⚠️ Error en ${label}: El puerto seleccionado (${port.type}) es de Fibra y no es compatible con cable UTP.`);
-            //     return false;
-            // }
-            return true;
-            return true;
-        };
-
-        if (!validatePort(sourceNode, fromPort, "ORIGEN")) return;
-        if (!validatePort(targetNode, toPort, "DESTINO")) return;
 
         try {
             const conn = await this.inventoryManager.addConnection(
-                sourceNode.id,
-                targetNode.id,
-                this.connectionWaypoints,
+                this.connectionSourceId,
+                targetNode ? targetNode.id : null,
+                [...this.connectionWaypoints],
                 cableType,
                 fibers,
-                fromPort,
-                toPort,
-                sectionType
+                this.selectedSourcePort,
+                this.selectedTargetPort,
+                sectionType,
+                identification
             );
 
             if (conn) {
                 this.mapManager.addConnection(conn);
-                this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
-
-                const distance = this.mapManager.calculateDistance(this.connectionWaypoints);
-                // alert(`Conexión creada: ${sourceNode.name} -> ${targetNode.name}\nDistancia: ${distance.toFixed(2)}m\nTipo: ${cableType} (${fibers} hilos)`);
+                this.mapManager.refreshAllMarkers(this.inventoryManager);
 
                 this.closeModal('connection');
-                this.cancelConnectionFlow();
-                this.pendingConnectionTarget = null;
-                this.selectedSourcePort = null;
-                this.selectedTargetPort = null;
+                this.resetConnectionState(); // Use the new reset method
+                this.refreshNodeList();
+                this.showConnectionDetails(conn.id);
             }
         } catch (e) {
             console.error("Error creating connection:", e);
@@ -2673,15 +3212,33 @@ class UIManager {
 
 
     cancelConnectionFlow() {
+        this.mapManager.clearTempPolyline();
+        this.resetConnectionState();
+        alert("Conexión cancelada.");
+    }
+
+    resetConnectionState() {
         this.isConnecting = false;
         this.connectionSourceId = null;
         this.connectionWaypoints = [];
+        this.pendingConnectionTarget = null;
+        this.selectedSourcePort = null;
+        this.selectedTargetPort = null;
         this.mapManager.clearTempPolyline();
-        this.details.btnConnect.textContent = "🔗 Conectar";
-        this.details.btnConnect.disabled = false;
-        alert("Conexión finalizada.");
-    }
+        this.removeStandaloneClosureUI();
 
+        const btnNode = this.details.btnConnect;
+        if (btnNode) {
+            btnNode.textContent = this._originalBtnText.connect || "🔗 CONECTAR";
+            btnNode.disabled = false;
+        }
+
+        const btnTender = document.getElementById('btn-tender-cable');
+        if (btnTender) {
+            btnTender.textContent = this._originalBtnText.tenderCable || "🧵 Tender Cableado";
+            btnTender.disabled = false;
+        }
+    }
     // --- Rack Management ---
     showRackView() {
         const node = this.inventoryManager.getNode(this.currentNodeId);
@@ -2752,57 +3309,36 @@ class UIManager {
     }
 
     async finalizeAddEquipment() {
-        console.log('Finalizing Add Equipment...');
-        console.log('Current Rack Node ID:', this.currentRackNodeId);
+        const name = this.modalForms.equipName.value.trim();
+        const type = this.modalForms.equipType.value;
+        const portGroups = JSON.parse(this.modalForms.equipPortsData.value || "[]");
+        const isProvider = this.modalForms.equipIsProvider.checked;
+
+        if (!name) return alert("Nombre requerido");
+        if (portGroups.length === 0 && type !== 'MUFLA') {
+            if (!confirm("No has añadido puertos. ¿Continuar?")) return;
+        }
+
+        const equipment = {
+            id: Date.now().toString(),
+            name: name.toUpperCase(),
+            type: type,
+            portGroups: portGroups,
+            isProvider: isProvider
+        };
 
         try {
-            const name = this.modalForms.equipName.value;
-            const type = this.modalForms.equipType.value;
-            const ports = this.modalForms.equipPorts.value;
-            const isProvider = this.modalForms.equipIsProvider.checked;
-
-            console.log('Equipment Data:', { name, type, ports, isProvider });
-
-            if (!name || name.trim() === "") {
-                alert("Por favor ingresa un nombre para el equipo.");
-                return;
-            }
-
-            if (!this.currentRackNodeId) {
-                console.error('No currentRackNodeId set!');
-                alert("Error: No se ha seleccionado un rack. Por favor cierra y vuelve a abrir la vista del rack.");
-                return;
-            }
-
-            const equipment = {
-                id: Date.now().toString(),
-                name: name,
-                type: type,
-                totalPorts: ports,
-                isProvider: (type === 'ROUTER' && isProvider)
-                // Note: ports array will be initialized by addEquipmentToRack
-            };
-
-            console.log('Adding equipment to rack:', equipment);
-
-            // Add to inventory (this will initialize ports)
             await this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
-
-            console.log('Equipment added successfully');
 
             // Get updated node and refresh view
             const updatedNode = this.inventoryManager.getNode(this.currentRackNodeId);
-            console.log('Updated node:', updatedNode);
-
             this.renderRackList(updatedNode);
 
             this.closeModal('equipment');
             this.modalForms.equipment.reset();
-
-            console.log('Equipment addition complete');
         } catch (e) {
             console.error("Error adding equipment:", e);
-            alert("Ocurrió un error al guardar el equipo. Revisa la consola para más detalles.");
+            alert("Error al añadir equipo: " + e.message);
         }
     }
 
@@ -3062,7 +3598,7 @@ class UIManager {
         // Simplified disconnect logic (needs backend support in InventoryManager, adding it here)
         // For now, just alert as placeholder or implement basic disconnect
         // Since InventoryManager.patchPorts handles connection, we need a disconnect method.
-        // I'll implement a basic disconnect here by manually updating the node data for now, 
+        // I'll implement a basic disconnect here by manually updating the node data for now,
         // but ideally InventoryManager should handle it.
 
         const node = this.inventoryManager.getNode(this.currentRackNodeId);
@@ -3096,17 +3632,50 @@ class UIManager {
 
     // --- Connection Management ---
     showConnectionDetails(connectionId) {
-        const connection = this.inventoryManager.getConnections().find(c => c.id === connectionId);
-        if (!connection) return;
+        // Use loose equality or cast to handle potential numeric/string ID mismatches from Supabase
+        const connections = this.inventoryManager.getConnections();
+        const connection = connections.find(c => c.id == connectionId);
+        if (!connection) {
+            console.error("Connection not found:", connectionId);
+            return;
+        }
 
         this.currentConnectionId = connectionId;
 
-        const fromNode = this.inventoryManager.getNode(connection.from);
-        const toNode = this.inventoryManager.getNode(connection.to);
+        const fromNode = connection.from ? this.inventoryManager.getNode(connection.from) : null;
+        const toNode = connection.to ? this.inventoryManager.getNode(connection.to) : { name: 'Final Abierto (Standalone)' };
 
-        this.connectionDetails.fromName.textContent = fromNode ? fromNode.name : '--';
-        this.connectionDetails.toName.textContent = toNode ? toNode.name : '--';
+        this.connectionDetails.fromName.textContent = fromNode ? fromNode.name : '(Punto Libre)';
+        this.connectionDetails.toName.textContent = toNode ? toNode.name : '(Punto Libre)';
+
+        // Safety check for ID display elements
+        if (this.connectionDetails.identificationRow && this.connectionDetails.identification) {
+            if (connection.identification) {
+                this.connectionDetails.identificationRow.classList.remove('hidden');
+                this.connectionDetails.identification.textContent = connection.identification;
+            } else {
+                this.connectionDetails.identificationRow.classList.add('hidden');
+            }
+        }
         this.connectionDetails.cableType.textContent = connection.cableType || '--';
+        this.connectionDetails.fibers.textContent = connection.fibers || '--';
+
+        const distance = this.mapManager.calculateDistance(connection.path);
+        this.connectionDetails.distance.textContent = distance.toFixed(2);
+
+        // Reserve Calculation
+        let totalReserve = 0;
+        if (fromNode && fromNode.reserve) totalReserve += parseFloat(fromNode.reserve || 0);
+        if (toNode && toNode.id && toNode.reserve) totalReserve += parseFloat(toNode.reserve || 0);
+
+        // Intermediate Node Reserves (nodes that this cable "touches")
+        const intermediateReserves = this.inventoryManager.getIntermediateReserves(connection);
+        totalReserve += intermediateReserves;
+
+        const totalLength = distance + totalReserve;
+
+        this.connectionDetails.reserve.textContent = totalReserve.toFixed(2);
+        this.connectionDetails.total.textContent = totalLength.toFixed(2);
 
         if (connection.cableType === 'DROP') {
             this.connectionDetails.sectionTypeRow.classList.add('hidden');
@@ -3115,21 +3684,23 @@ class UIManager {
             this.connectionDetails.sectionType.textContent = connection.sectionType || 'No definido';
         }
 
-        this.connectionDetails.fibers.textContent = connection.fibers || '--';
-
-        const distance = this.mapManager.calculateDistance(connection.path);
-        this.connectionDetails.distance.textContent = distance.toFixed(2);
-
         // Map Ports visibility
-        const isFiber = ['ADSS', 'ASU', 'MINI-ADSS', 'DROP', 'FIBRA'].includes(connection.cableType);
-        const sourceHasPorts = fromNode && fromNode.rack && fromNode.rack.length > 0;
-        const targetHasPorts = toNode && toNode.rack && toNode.rack.length > 0;
+        const type = (connection.cableType || '').toUpperCase();
+        const isFiber = type.includes('ADSS') || type.includes('ASU') || type.includes('DROP') || type.includes('FIBRA') || type.includes('MINI-ADSS');
+
+        // Safer check for rack ports
+        const sourceHasPorts = fromNode && fromNode.rack && Array.isArray(fromNode.rack) && fromNode.rack.length > 0;
+        const targetHasPorts = toNode && toNode.rack && Array.isArray(toNode.rack) && toNode.rack.length > 0;
 
         if (isFiber && (sourceHasPorts || targetHasPorts)) {
             this.connectionDetails.btnMapPorts.classList.remove('hidden');
         } else {
             this.connectionDetails.btnMapPorts.classList.add('hidden');
         }
+
+        // Highlight in Map
+        this.mapManager.resetNetworkStyles(this.inventoryManager);
+        this.mapManager.highlightConnection(connectionId);
 
         this.switchView('connection');
     }
@@ -3173,7 +3744,7 @@ class UIManager {
                     <div style="width:14px; height:14px; background:${fiber.colorHex}; border:1px solid #ccc; border-radius:3px;"></div>
                     <div style="flex:1"><strong>Hilo ${fiber.number}</strong> (${fiber.color})</div>
                 </div>
-                
+
                 <div style="display:flex; gap:10px;">
                     <div style="flex:1">
                         <small style="color:#666; font-size:10px; display:block; margin-bottom:2px;">TERMINACIÓN EN ORIGEN</small>
@@ -3258,7 +3829,7 @@ class UIManager {
         if (!connection) return;
 
         // Show modal with current values
-        this.modalForms.connCableType.value = connection.cableType || 'ADSS';
+        this.modalForms.connCableType.value = connection.cableType || 'ADSS FIBRA';
         this.modalForms.connFibers.value = connection.fibers || '12';
 
         // Temporarily store connection for editing
@@ -3308,6 +3879,7 @@ class UIManager {
                 await this.inventoryManager.deleteConnection(this.currentConnectionId);
                 this.mapManager.removeConnection(this.currentConnectionId);
                 this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to update connectivity status
+                this.refreshNodeList();
                 this.switchView('list');
                 this.currentConnectionId = null;
             }
@@ -3583,6 +4155,7 @@ class UIManager {
         this.currentNodeId = nodeId;
         this.details.name.textContent = node.name;
         this.details.type.textContent = node.type;
+        this.details.reserve.textContent = parseFloat(node.reserve || 0).toFixed(2);
         this.details.coords.textContent = `${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}`;
         this.details.type.style.backgroundColor = this.mapManager.getColorForType(node.type);
 
@@ -3775,18 +4348,23 @@ class UIManager {
 
     updateNodeTypeOptions() {
         const select = this.form.type;
+        const currentVal = select.value;
         select.innerHTML = '<option value="">Seleccione tipo...</option>';
 
-        // Sort types: standard ones first (if we have a preferred order) or just alphabetical
         const sortedTypes = [...this.customNodeTypes].sort((a, b) => a.name.localeCompare(b.name));
 
         sortedTypes.forEach(t => {
             const opt = document.createElement('option');
             opt.value = t.name;
             opt.textContent = t.name;
-            // No need for lightning bolt if all are from DB
             select.appendChild(opt);
         });
+
+        // Restore value if it still exists
+        if (currentVal) {
+            const exists = Array.from(select.options).some(o => o.value === currentVal);
+            if (exists) select.value = currentVal;
+        }
     }
 
     async loadCableTypes() {
@@ -3810,7 +4388,7 @@ class UIManager {
         this.cableTypes.forEach(type => {
             const opt = document.createElement('option');
             opt.value = type.name;
-            opt.textContent = `${type.name} - ${type.media_type} (${type.threads_count}${type.media_type === 'FIBRA' ? 'H' : 'P'})`;
+            opt.textContent = type.name;
             opt.dataset.threads = type.threads_count;
             opt.dataset.media = type.media_type;
             select.appendChild(opt);
@@ -5120,34 +5698,60 @@ class UIManager {
             }
         });
 
-        // Setup navigation buttons
-        this.setupNavigationButtons();
+        // Logic moved to UIManager.init() to allow navigation before project selection
+        // this.setupNavigationButtons();
     }
 
     refreshNodeList() {
-        const container = document.getElementById('node-list-container');
+        // NODES SECTION
+        const nodeContainer = document.getElementById('node-list-container');
         const nodes = this.inventoryManager.getNodes();
 
         if (nodes.length === 0) {
-            container.innerHTML = '<p class="empty-state">No hay nodos registrados.</p>';
-            return;
+            nodeContainer.innerHTML = '<p class="empty-state">No hay nodos registrados.</p>';
+        } else {
+            nodeContainer.innerHTML = '';
+            nodes.forEach(node => {
+                const item = document.createElement('div');
+                item.className = 'nav-btn';
+                item.style.fontSize = '14px';
+                item.innerHTML = `
+                    <span style="color: ${this.mapManager.getColorForType(node.type)}">●</span>
+                        ${node.name} <small style="margin-left:auto; opacity:0.6">${node.type}</small>
+                `;
+                item.addEventListener('click', () => {
+                    this.navigateToNode(node.id, true);
+                });
+                nodeContainer.appendChild(item);
+            });
         }
 
-        container.innerHTML = '';
-        nodes.forEach(node => {
-            const item = document.createElement('div');
-            item.className = 'nav-btn';
-            item.style.fontSize = '14px';
-            item.innerHTML = `
-                <span style="color: ${this.mapManager.getColorForType(node.type)}">●</span>
-                    ${node.name} <small style="margin-left:auto; opacity:0.6">${node.type}</small>
-            `;
-            item.addEventListener('click', () => {
-                this.showNodeDetails(node.id);
-                this.mapManager.map.setView([node.lat, node.lng], 16);
+        // CABLES SECTION
+        const cableContainer = document.getElementById('cable-list-container');
+        const connections = this.inventoryManager.getConnections();
+
+        if (connections.length === 0) {
+            cableContainer.innerHTML = '<p class="empty-state">No hay cables registrados.</p>';
+        } else {
+            cableContainer.innerHTML = '';
+            connections.forEach(conn => {
+                const fromNode = this.inventoryManager.getNode(conn.from);
+                const toNode = this.inventoryManager.getNode(conn.to);
+                const title = conn.identification || `${fromNode?.name || '---'} ↔ ${toNode?.name || '---'}`;
+
+                const item = document.createElement('div');
+                item.className = 'nav-btn';
+                item.style.fontSize = '14px';
+                item.innerHTML = `
+                    <span style="color: #333">🧵</span>
+                        ${title} <small style="margin-left:auto; opacity:0.6">${conn.cableType}</small>
+                `;
+                item.addEventListener('click', () => {
+                    this.navigateToConnection(conn.id, true);
+                });
+                cableContainer.appendChild(item);
             });
-            container.appendChild(item);
-        });
+        }
     }
 
 
@@ -5158,6 +5762,7 @@ class UIManager {
 
         if (btnMap) {
             btnMap.addEventListener('click', () => {
+                console.log("Map button clicked");
                 this.showMapView();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnMap.classList.add('active');
@@ -5166,6 +5771,7 @@ class UIManager {
 
         if (btnInventory) {
             btnInventory.addEventListener('click', () => {
+                console.log("Inventory button clicked");
                 this.showMainInventoryView();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnInventory.classList.add('active');
@@ -5174,6 +5780,7 @@ class UIManager {
 
         if (btnReports) {
             btnReports.addEventListener('click', () => {
+                console.log("Reports button clicked");
                 this.showMainReportsView();
                 document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
                 btnReports.classList.add('active');
@@ -5368,7 +5975,7 @@ class UIManager {
             const statusText = report.resolved ? 'Resuelto' : 'Pendiente';
 
             html += `
-                <div class="report-item ${statusClass}" onclick="window.uiManager.navigateToNode('${report.nodeId}')">
+                <div class="report-item ${statusClass}" onclick="window.uiManager.navigateToNode('${report.nodeId}', true)">
                     <div class="report-header">
                         <span class="report-node-name">${report.nodeName} (${report.nodeType})</span>
                         <span class="report-status ${statusClass}">${statusText}</span>
@@ -5414,6 +6021,7 @@ class UIManager {
         if (this.mapContainer) this.mapContainer.classList.remove('hidden');
         if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
+        // Restore standard behavior: 'Map' button always brings back the list sidebar
         this.switchView('list');
     }
 
@@ -5493,7 +6101,7 @@ class UIManager {
             const statusText = report.resolved ? 'Resuelto' : 'Pendiente';
 
             html += `
-                <div class="report-item ${statusClass}" onclick="window.uiManager.navigateToNode('${report.nodeId}')">
+                <div class="report-item ${statusClass}" onclick="window.uiManager.navigateToNode('${report.nodeId}', true)">
                     <div class="report-header">
                         <span class="report-node-name">${report.nodeName} (${report.nodeType})</span>
                         <span class="report-status ${statusClass}">${statusText}</span>
@@ -5555,7 +6163,6 @@ class UIManager {
         // Update Stats Summary (Top 4 favorites)
         if (this.inventoryUI.stats) {
             let statsHtml = '';
-            // First block: Total Nodes. Following blocks: User Favorites (max 3)
             const displayFavs = ['TOTAL_NODES'];
             this.favoriteCategories.forEach(fav => {
                 if (displayFavs.length < 4) displayFavs.push(fav);
@@ -5574,13 +6181,7 @@ class UIManager {
                     const group = connGroups[fav];
                     let dist = 0;
                     group.forEach(c => {
-                        if (c.path && Array.isArray(c.path)) {
-                            try {
-                                dist += this.mapManager.calculateDistance(c.path);
-                            } catch (err) {
-                                console.warn(`Invalid path for connection ${c.id}:`, err);
-                            }
-                        }
+                        try { dist += this.mapManager.calculateDistance(c.path || []); } catch (e) { }
                     });
                     countLabel = `${(dist / 1000).toFixed(2)} km`;
                     label = `Cable ${fav}`;
@@ -5591,9 +6192,7 @@ class UIManager {
                 } else if (fav === 'TOTAL_FIBER') {
                     let totalDist = 0;
                     connections.forEach(c => {
-                        if (c.path && Array.isArray(c.path)) {
-                            try { totalDist += this.mapManager.calculateDistance(c.path); } catch (e) { }
-                        }
+                        try { totalDist += this.mapManager.calculateDistance(c.path || []); } catch (e) { }
                     });
                     countLabel = `${(totalDist / 1000).toFixed(2)} km`;
                     label = 'Fibra Total';
@@ -5610,60 +6209,56 @@ class UIManager {
             this.inventoryUI.stats.innerHTML = statsHtml;
         }
 
-        // --- RENDER MAIN BODY ---
         const container = this.inventoryUI.container;
         if (!container) return;
         container.innerHTML = '';
 
-        // Header for Equipment
-        const equipHeader = document.createElement('h3');
-        equipHeader.innerText = 'Equipos y Terminales';
-        equipHeader.style.gridColumn = '1 / -1';
-        equipHeader.style.margin = '10px 0';
-        container.appendChild(equipHeader);
+        // Render Node Categories
+        if (this.inventoryTypeFilter === 'all' || this.inventoryTypeFilter === 'node') {
+            const header = document.createElement('h3');
+            header.innerText = 'Equipos y Terminales';
+            header.style.gridColumn = '1 / -1';
+            header.style.margin = '10px 0';
+            container.appendChild(header);
 
-        // Render Node Category Cards
-        Object.keys(nodeGroups).sort().forEach(type => {
-            const count = nodeGroups[type].length;
-            const color = this.mapManager.getColorForType(type);
-
-            const card = this.createCategoryCard(type, `${count} unidades`, color, () => {
-                this.inventoryViewMode = 'category';
-                this.currentInventoryCategory = type;
-                this.currentInventoryType = 'node';
-                this.renderInventory();
+            Object.keys(nodeGroups).sort().forEach(type => {
+                const count = nodeGroups[type].length;
+                const color = this.mapManager.getColorForType(type);
+                const card = this.createCategoryCard(type, `${count} unidades`, color, () => {
+                    this.inventoryViewMode = 'category';
+                    this.currentInventoryCategory = type;
+                    this.currentInventoryType = 'node';
+                    this.renderInventory();
+                });
+                container.appendChild(card);
             });
-            container.appendChild(card);
-        });
+        }
 
-        // Header for Cables
-        const cableHeader = document.createElement('h3');
-        cableHeader.innerText = 'Cables y Tendidos';
-        cableHeader.style.gridColumn = '1 / -1';
-        cableHeader.style.margin = '20px 0 10px 0';
-        container.appendChild(cableHeader);
+        // Render Cable Categories
+        if (this.inventoryTypeFilter === 'all' || this.inventoryTypeFilter === 'connection') {
+            const header = document.createElement('h3');
+            header.innerText = 'Cables y Tendidos';
+            header.style.gridColumn = '1 / -1';
+            header.style.margin = '20px 0 10px 0';
+            container.appendChild(header);
 
-        // Render Cable Category Cards
-        Object.keys(connGroups).sort().forEach(type => {
-            const group = connGroups[type];
-            const count = group.length;
-            let distance = 0;
-            group.forEach(c => {
-                if (c.path && Array.isArray(c.path)) {
-                    try {
-                        distance += this.mapManager.calculateDistance(c.path);
-                    } catch (err) { }
-                }
+            Object.keys(connGroups).sort().forEach(type => {
+                const group = connGroups[type];
+                let dist = 0;
+                group.forEach(c => {
+                    try { dist += this.mapManager.calculateDistance(c.path || []); } catch (e) { }
+                });
+
+                const label = `${group.length} tramos - ${(dist / 1000).toFixed(2)} km`;
+                const card = this.createCategoryCard(`Cable ${type}`, label, '#333', () => {
+                    this.inventoryViewMode = 'category';
+                    this.currentInventoryCategory = type;
+                    this.currentInventoryType = 'connection';
+                    this.renderInventory();
+                });
+                container.appendChild(card);
             });
-
-            const card = this.createCategoryCard(type, `${count} tramos - ${distance.toFixed(1)}m`, '#333', () => {
-                this.inventoryViewMode = 'category';
-                this.currentInventoryCategory = type;
-                this.currentInventoryType = 'connection';
-                this.renderInventory();
-            });
-            container.appendChild(card);
-        });
+        }
     }
 
     createCategoryCard(title, subtitle, color, onClick) {
@@ -5674,9 +6269,8 @@ class UIManager {
             <div class="inventory-card-header" style="justify-content: space-between;">
                 <div>
                     <span class="inventory-card-title">${title}</span>
-                    <span class="inventory-card-type" style="background-color: ${color}">CATEGORÍA</span>
                 </div>
-                <span class="fav-icon" style="cursor: pointer; font-size: 20px; transition: transform 0.2s;" 
+                <span class="fav-icon" style="cursor: pointer; font-size: 20px;" 
                       onclick="event.stopPropagation(); window.uiManager.toggleFavorite('${title}')">
                       ${isFav ? '⭐' : '☆'}
                 </span>
@@ -5695,13 +6289,8 @@ class UIManager {
         if (index > -1) {
             this.favoriteCategories.splice(index, 1);
         } else {
-            // Add as favorite
             this.favoriteCategories.push(category);
-            // Optional: Limit to last 4 logically, or just let users manage it.
-            // But we only show 4 in top bar.
         }
-
-        // Save to localStorage
         localStorage.setItem('ultranet_favorites', JSON.stringify(this.favoriteCategories));
         this.renderInventory();
     }
@@ -5711,11 +6300,12 @@ class UIManager {
         if (!container) return;
         container.innerHTML = '';
 
-        // Back UI
         const backBtn = document.createElement('div');
         backBtn.className = 'inventory-list-item back-btn';
         backBtn.style.gridColumn = '1 / -1';
         backBtn.style.backgroundColor = '#f0f0f0';
+        backBtn.style.padding = '10px';
+        backBtn.style.cursor = 'pointer';
         backBtn.innerHTML = `<span><strong>← Volver al Resumen</strong> (${this.currentInventoryCategory})</span>`;
         backBtn.onclick = () => {
             this.inventoryViewMode = 'summary';
@@ -5725,14 +6315,10 @@ class UIManager {
 
         if (this.currentInventoryType === 'node') {
             const nodes = this.inventoryManager.getNodes().filter(n => n.type === this.currentInventoryCategory);
-            const filteredNodes = nodes.filter(n =>
-                n.name.toLowerCase().includes(this.inventorySearchQuery.toLowerCase())
-            );
-
-            filteredNodes.forEach(node => {
+            nodes.forEach(node => {
                 const card = this.createItemCard(node.name, node.type, this.mapManager.getColorForType(node.type), () => {
                     this.navigateToNodeFromInventory(node.id);
-                }, node.clientData ? `Plan: ${node.clientData.plan}<br>Dirección: ${node.clientData.address}` : `ID: ${node.id.substring(0, 8)}`);
+                }, node.clientData ? `Plan: ${node.clientData.plan}` : `ID: ${node.id.substring(0, 8)}`);
                 container.appendChild(card);
             });
         } else {
@@ -5741,12 +6327,11 @@ class UIManager {
                 const fromNode = this.inventoryManager.getNode(conn.from);
                 const toNode = this.inventoryManager.getNode(conn.to);
                 const distance = this.mapManager.calculateDistance(conn.path).toFixed(1);
+                const title = conn.identification || `${fromNode?.name || '---'} ↔ ${toNode?.name || '---'}`;
 
-                const title = `${fromNode?.name || '---'} ↔ ${toNode?.name || '---'}`;
                 const card = this.createItemCard(title, `${conn.fibers} Hilos`, '#333', () => {
-                    this.hideMainInventoryView();
-                    this.showConnectionDetails(conn.id);
-                }, `Metraje: ${distance} metros<br>Tipo: ${conn.sectionType || 'N/A'}`);
+                    this.navigateToConnectionFromInventory(conn.id);
+                }, `Metraje: ${distance} m<br>Tipo: ${conn.sectionType || 'N/A'}`);
                 container.appendChild(card);
             });
         }
@@ -5773,14 +6358,17 @@ class UIManager {
 
     navigateToNodeFromInventory(nodeId) {
         this.hideMainInventoryView();
-        this.navigateToNode(nodeId);
+        this.navigateToNode(nodeId, true);
     }
 
-    navigateToNode(nodeId) {
+    navigateToNode(nodeId, moveMap = false) {
         this.showNodeDetails(nodeId);
         const node = this.inventoryManager.getNode(nodeId);
-        if (node) {
-            this.mapManager.map.setView([node.lat, node.lng], 16);
+        if (node && moveMap) {
+            // Check if node is already visible to avoid jarring transitions
+            const currentZoom = this.mapManager.map.getZoom();
+            const targetZoom = Math.max(currentZoom, 18); // Allow up to 18, or keep current if higher
+            this.mapManager.map.setView([node.lat, node.lng], targetZoom);
         }
         document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
         const btnMap = document.getElementById('btn-map');
@@ -5788,16 +6376,33 @@ class UIManager {
     }
 
     navigateToNodeFromReports(nodeId) {
-        // Close reports view and return to map
         this.hideMainReportsView();
-        // Navigate to node
-        this.navigateToNode(nodeId);
+        this.navigateToNode(nodeId, true);
+    }
+
+    navigateToConnectionFromInventory(connId) {
+        this.hideMainInventoryView();
+        this.navigateToConnection(connId, true);
+    }
+
+    navigateToConnection(connId, moveMap = false) {
+        this.showConnectionDetails(connId);
+        const conn = this.inventoryManager.getConnections().find(c => c.id == connId);
+        if (conn && conn.path && conn.path.length > 0 && moveMap) {
+            const bounds = L.polyline(conn.path).getBounds();
+            // Allow higher zoom for short cables
+            this.mapManager.map.fitBounds(bounds, { padding: [50, 50], maxZoom: 19 });
+        }
+        document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
+        const btnMap = document.getElementById('btn-map');
+        if (btnMap) btnMap.classList.add('active');
     }
 
 
     resetForm() {
         this.form.form.reset();
         this.tempLocation = null;
+        this.pendingSplitConnectionId = null;
         this.form.clientFields.classList.add('hidden');
     }
 }
@@ -5820,10 +6425,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize Admin Manager
     const adminManager = new AdminManager();
     window.adminManager = adminManager;
+    adminManager.init();
 
     // Expose for debugging/testing
     window.mapManager = mapManager;
     window.inventoryManager = inventoryManager;
     window.uiManager = uiManager;
     window.userManager = userManager;
+    window.authManager = userManager; // Alias for backward compatibility or different naming
 });

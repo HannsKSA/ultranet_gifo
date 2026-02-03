@@ -88,6 +88,7 @@ def init_db():
                 "damageReports" JSONB DEFAULT '[]'::jsonb,
                 "clientData" JSONB DEFAULT '{}'::jsonb,
                 "customFields" JSONB DEFAULT '{}'::jsonb,
+                reserve DOUBLE PRECISION DEFAULT 0,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
         """)
@@ -96,14 +97,15 @@ def init_db():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS connections (
                 id TEXT PRIMARY KEY,
-                "from" TEXT NOT NULL,
-                "to" TEXT NOT NULL,
+                "from" TEXT,
+                "to" TEXT,
                 path JSONB NOT NULL,
                 "cableType" TEXT NOT NULL,
                 "sectionType" TEXT,
                 fibers INTEGER NOT NULL,
                 "fromPort" JSONB,
                 "toPort" JSONB,
+                "identification" TEXT,
                 "fiberDetails" JSONB DEFAULT '[]'::jsonb,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
@@ -113,6 +115,7 @@ def init_db():
         migrations = [
             ("nodes", "address", "TEXT"),
             ("nodes", "plan", "TEXT"),
+            ("nodes", "reserve", "DOUBLE PRECISION DEFAULT 0"),
             ("nodes", "equipment", "JSONB DEFAULT '[]'::jsonb"),
             ("nodes", "rack", "JSONB DEFAULT '[]'::jsonb"),
             ("nodes", "splitters", "JSONB DEFAULT '[]'::jsonb"),
@@ -126,6 +129,7 @@ def init_db():
             ("connections", "fromPort", '"fromPort"', "JSONB"),
             ("connections", "toPort", '"toPort"', "JSONB"),
             ("connections", "fiberDetails", '"fiberDetails"', "JSONB DEFAULT '[]'::jsonb"),
+            ("connections", "identification", "TEXT"),
             ("connections", "created_at", "TIMESTAMP WITH TIME ZONE DEFAULT NOW()"),
         ]
         
@@ -148,6 +152,12 @@ def init_db():
                     END IF;
                 END $$;
             """)
+
+        # Special migration for connections: Remove NOT NULL from "from" and "to"
+        cur.execute("""
+            ALTER TABLE connections ALTER COLUMN "from" DROP NOT NULL;
+            ALTER TABLE connections ALTER COLUMN "to" DROP NOT NULL;
+        """)
 
         # 2. Add project_id columns if they don't exist
         column_migrations = [
@@ -265,11 +275,11 @@ def init_db():
 
         # Seeding default cable types
         default_cable_types = [
-            ('ADSS 12H', 'FIBRA', 'G.652D', 12, True),
-            ('ADSS 6H', 'FIBRA', 'G.652D', 6, True),
-            ('DROP 1H', 'FIBRA', 'G.657A1', 1, True),
+            ('ADSS FIBRA', 'FIBRA', 'G.652D', 1, True),
+            ('DROP', 'FIBRA', 'G.657A1', 1, True),
             ('UTP Cat6', 'UTP', 'CAT6', 4, False),
-            ('ASU 12H', 'FIBRA', 'G.652D', 12, True)
+            ('ASU FIBRA', 'FIBRA', 'G.652D', 1, True),
+            ('SUBTERRANEO', 'FIBRA', 'G.652D', 1, True)
         ]
 
         for name, media, cat, count, ext in default_cable_types:
@@ -286,11 +296,12 @@ def init_db():
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_to ON connections("to");')
         cur.execute("CREATE INDEX IF NOT EXISTS idx_cable_types_name ON cable_types(name);")
 
-        # Clean slate: Delete all existing nodes and connections for fresh start
-        print("🧹 Cleaning database for fresh start...")
-        cur.execute("DELETE FROM connections")
-        cur.execute("DELETE FROM nodes")
-        print("✓ Database cleaned.")
+        # DISABLED: Database cleaning (uncomment only for development resets)
+        # print("🧹 Cleaning database for fresh start...")
+        # cur.execute("DELETE FROM connections")
+        # cur.execute("DELETE FROM nodes")
+        # cur.execute("DELETE FROM cable_types")
+        # print("✓ Database cleaned.")
 
         # 5. Migration: Assign existing data to a default project if project_id is NULL
         # Only run this if we have data to avoid unnecessary "Default Project" creation on empty DB
@@ -516,11 +527,49 @@ class CustomHandler(SimpleHTTPRequestHandler):
             super().do_POST()
 
 def run_server():
-    print(f"Starting server at http://localhost:{PORT}")
+    # Attempt to create server first to catch port errors immediately
     server_address = ('', PORT)
-    httpd = HTTPServer(server_address, CustomHandler)
+    try:
+        httpd = HTTPServer(server_address, CustomHandler)
+    except OSError as e:
+        if e.errno == 98: # Address already in use
+            print(f"Error: Port {PORT} is already in use.")
+            print("Try running './stop' or './restart' first.")
+            sys.exit(1)
+        else:
+            raise e
+
+    print(f"Starting server at http://localhost:{PORT}")
     
-    # Open browser in a separate thread to not block server startup
+    # Fork to background
+    try:
+        pid = os.fork()
+        if pid > 0:
+            # Parent process
+            print(f"✓ Server started in background (PID: {pid})")
+            print("  Log output redirected to: server.log")
+            print("  Run './stop' to stop the server.")
+            sys.exit(0)
+    except OSError as e:
+        print(f"Error forking process: {e}")
+        sys.exit(1)
+        
+    # --- CHILD PROCESS ---
+    # Decouple from parent environment
+    os.setsid()
+    
+    # Redirect stdout/stderr to log file
+    sys.stdout.flush()
+    sys.stderr.flush()
+    
+    # Check if we should rotate log or just append? Append is safer.
+    log_file = open('server.log', 'a', buffering=1) # Line buffered
+    os.dup2(log_file.fileno(), sys.stdout.fileno())
+    os.dup2(log_file.fileno(), sys.stderr.fileno())
+    
+    print(f"\n--- SGIFO Server Session Started: {time.ctime()} ---")
+
+    # Open browser in a separate thread
     threading.Timer(1.0, lambda: webbrowser.open(f"http://localhost:{PORT}")).start()
     
     try:
@@ -528,6 +577,8 @@ def run_server():
     except KeyboardInterrupt:
         print("\nStopping server...")
         httpd.server_close()
+    except Exception as e:
+        print(f"Server runtime error: {e}")
 
 if __name__ == "__main__":
     print("Starting SGIFO...")
