@@ -757,11 +757,17 @@ class AdminManager {
                      </div>
                      <div id="admin-cable-types-list"></div>
                 </div>
-                <div id="admin-content-lists" class="hidden" style="flex:1; overflow-y:auto;">
-                     <div style="padding: 20px; text-align: center;">
-                        <h4>Gestión de Listas</h4>
-                        <p>Funcionalidad en desarrollo...</p>
+                <div id="admin-content-lists" class="hidden" style="flex:1; overflow-y:auto; padding: 10px;">
+                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <h4>Gestión Maestra de Elementos</h4>
+                        <button class="action-btn" style="width:auto; padding:5px 12px;" onclick="window.adminManager.refreshLists()">🔄 Refrescar</button>
                      </div>
+                     <div class="list-tabs" style="display:flex; gap:10px; margin-bottom:10px; padding:5px; background:#f4f4f4; border-radius:4px;">
+                        <button id="tab-list-nodes" class="action-btn" style="flex:1; font-size:12px; height:30px;" onclick="window.adminManager.switchListSubTab('nodes')">Nodos</button>
+                        <button id="tab-list-conns" class="btn-secondary" style="flex:1; font-size:12px; height:30px;" onclick="window.adminManager.switchListSubTab('conns')">Cables</button>
+                     </div>
+                     <div id="admin-list-nodes-container"></div>
+                     <div id="admin-list-conns-container" class="hidden"></div>
                 </div>
             </div>
         </div>`;
@@ -904,6 +910,7 @@ class AdminManager {
         if (tab === 'projects') this.refreshProjects();
         if (tab === 'node-types') this.refreshNodeTypes();
         if (tab === 'cable-types') this.refreshCableTypes();
+        if (tab === 'lists') this.refreshLists();
     }
 
     async refreshUsers() {
@@ -1314,6 +1321,111 @@ class AdminManager {
         }
     }
 
+    async refreshLists() {
+        const nodesContainer = document.getElementById('admin-list-nodes-container');
+        const connsContainer = document.getElementById('admin-list-conns-container');
+        if (!nodesContainer || !connsContainer) return;
+
+        const currentProjectId = window.userManager && window.userManager.currentProject ? window.userManager.currentProject.id : null;
+        if (!currentProjectId) {
+            nodesContainer.innerHTML = '<p style="padding:10px; color:orange;">Selecciona un proyecto primero para ver sus elementos.</p>';
+            connsContainer.innerHTML = '';
+            return;
+        }
+
+        nodesContainer.innerHTML = 'Cargando nodos...';
+        connsContainer.innerHTML = 'Cargando cables...';
+
+        try {
+            const { data: nodes, error: nodeError } = await supabaseClient.from('nodes').select('*').eq('project_id', currentProjectId).order('name');
+            const { data: conns, error: connError } = await supabaseClient.from('connections').select('*').eq('project_id', currentProjectId);
+
+            if (nodeError) throw nodeError;
+            if (connError) throw connError;
+
+            this.renderAdminNodesList(nodes);
+            this.renderAdminConnsList(conns, nodes);
+        } catch (e) {
+            nodesContainer.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+        }
+    }
+
+    switchListSubTab(tab) {
+        document.getElementById('admin-list-nodes-container').classList.toggle('hidden', tab !== 'nodes');
+        document.getElementById('admin-list-conns-container').classList.toggle('hidden', tab !== 'conns');
+        document.getElementById('tab-list-nodes').className = tab === 'nodes' ? 'action-btn' : 'btn-secondary';
+        document.getElementById('tab-list-conns').className = tab === 'conns' ? 'action-btn' : 'btn-secondary';
+    }
+
+    renderAdminNodesList(nodes) {
+        const container = document.getElementById('admin-list-nodes-container');
+        if (!nodes || nodes.length === 0) {
+            container.innerHTML = '<p style="padding:10px; color:#666;">No hay nodos en este proyecto.</p>';
+            return;
+        }
+
+        let html = `
+            <table style="width:100%; font-size:12px; border-collapse: collapse; margin-top:5px;">
+                <thead style="background:#f5f5f5; text-align:left;">
+                    <tr>
+                        <th style="padding:5px; border-bottom:1px solid #ddd;">Nombre</th>
+                        <th style="padding:5px; border-bottom:1px solid #ddd;">Tipo</th>
+                        <th style="padding:5px; border-bottom:1px solid #ddd;">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+        nodes.forEach(n => {
+            html += `
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding:5px;">${n.name}</td>
+                    <td style="padding:5px;">${n.type}</td>
+                    <td style="padding:5px;">
+                        <button class="btn-danger" style="padding:2px 5px; font-size:10px;" onclick="window.adminManager.deleteNodeFromList('${n.id}')">🗑️</button>
+                    </td>
+                </tr>`;
+        });
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+    }
+
+    renderAdminConnsList(conns, nodes) {
+        const container = document.getElementById('admin-list-conns-container');
+        if (!conns || conns.length === 0) {
+            container.innerHTML = '<p style="padding:10px; color:#666;">No hay cables en este proyecto.</p>';
+            return;
+        }
+
+        let html = `
+            <table style="width:100%; font-size:12px; border-collapse: collapse; margin-top:5px;">
+                <thead style="background:#f5f5f5; text-align:left;">
+                    <tr>
+                        <th style="padding:5px; border-bottom:1px solid #ddd;">Origen / Destino</th>
+                        <th style="padding:5px; border-bottom:1px solid #ddd;">Tipo</th>
+                        <th style="padding:5px; border-bottom:1px solid #ddd;">Acciones</th>
+                    </tr>
+                </thead>
+                <tbody>`;
+
+        conns.forEach(c => {
+            const fromNode = nodes.find(n => n.id === c.from);
+            const toNode = nodes.find(n => n.id === c.to);
+            html += `
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding:5px;">
+                        ${fromNode ? fromNode.name : '?'}<br>
+                        ${toNode ? toNode.name : '?'}
+                    </td>
+                    <td style="padding:5px;">${c.cableType || 'DROP'}<br><small>${c.fibers} hilos</small></td>
+                    <td style="padding:5px;">
+                        <button class="btn-danger" style="padding:2px 5px; font-size:10px;" onclick="window.adminManager.deleteConnFromList('${c.id}')">🗑️</button>
+                    </td>
+                </tr>`;
+        });
+        html += `</tbody></table>`;
+        container.innerHTML = html;
+    }
+
     async deleteCableType(id) {
         if (!confirm("¿Eliminar este tipo de cable? Puede afectar conexiones existentes.")) return;
         try {
@@ -1324,6 +1436,30 @@ class AdminManager {
         } catch (e) {
             alert("Error al eliminar: " + e.message);
         }
+    }
+
+    async deleteNodeFromList(id) {
+        if (!confirm("¿Seguro que deseas eliminar este nodo? Se eliminarán también sus conexiones.")) return;
+        try {
+            const { error } = await supabaseClient.from('nodes').delete().eq('id', id);
+            if (error) throw error;
+            this.refreshLists();
+            if (window.inventoryManager && window.userManager.currentProject) {
+                window.inventoryManager.init(window.userManager.currentProject.id);
+            }
+        } catch (e) { alert("Error: " + e.message); }
+    }
+
+    async deleteConnFromList(id) {
+        if (!confirm("¿Seguro que deseas eliminar esta conexión?")) return;
+        try {
+            const { error } = await supabaseClient.from('connections').delete().eq('id', id);
+            if (error) throw error;
+            this.refreshLists();
+            if (window.inventoryManager && window.userManager.currentProject) {
+                window.inventoryManager.init(window.userManager.currentProject.id);
+            }
+        } catch (e) { alert("Error: " + e.message); }
     }
 }
 
