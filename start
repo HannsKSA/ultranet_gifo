@@ -6,6 +6,7 @@ import time
 import webbrowser
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 import threading
+import json
 
 def install_package(package):
     subprocess.check_call([sys.executable, "-m", "pip", "install", package])
@@ -290,7 +291,152 @@ def init_db():
             """, (name, media, cat, count, ext))
         print("✓ Default cable types seeded.")
 
-        # 4. Create Indexes
+        # 4. Master Lists Tables
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS master_lists (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+        """)
+
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS master_list_items (
+                id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+                list_id UUID REFERENCES master_lists(id) ON DELETE CASCADE,
+                value TEXT NOT NULL,
+                label TEXT NOT NULL,
+                sort_order INTEGER DEFAULT 0,
+                permissions JSONB DEFAULT '{}'::jsonb,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                UNIQUE(list_id, value)
+            );
+        """)
+
+        # Migration for existing column
+        cur.execute("""
+            DO $$ 
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns 
+                    WHERE table_name='master_list_items' AND column_name='permissions'
+                ) THEN
+                    ALTER TABLE master_list_items ADD COLUMN permissions JSONB DEFAULT '{}'::jsonb;
+                END IF;
+            END $$;
+        """)
+
+        # Seed master lists
+        master_lists_data = {
+            'Planes de Servicio': [
+                ('50MB', '50 MB', 1, {}),
+                ('100MB', '100 MB', 2, {}),
+                ('300MB', '300 MB', 3, {}),
+                ('1GB', '1 GB', 4, {})
+            ],
+            'Tramos de Cable': [
+                ('TRONCAL', 'Troncal', 1, {}),
+                ('SUB_TRONCAL', 'Sub Troncal', 2, {}),
+                ('TRAMO', 'Tramo', 3, {}),
+                ('PATCHCORD', 'Patchcord', 4, {})
+            ],
+            'Cantidad de Hilos': [
+                ('1', '1 Hilo', 1, {}),
+                ('2', '2 Hilos', 2, {}),
+                ('4', '4 Hilos / Pares', 3, {}),
+                ('6', '6 Hilos', 4, {}),
+                ('12', '12 Hilos', 5, {}),
+                ('24', '24 Hilos', 6, {}),
+                ('48', '48 Hilos', 7, {}),
+                ('96', '96 Hilos', 8, {})
+            ],
+            'Tipos de Equipo Rack': [
+                ('OLT', 'OLT', 1, {}),
+                ('ODF', 'ODF', 2, {}),
+                ('SWITCH', 'Switch', 3, {}),
+                ('ROUTER', 'Router', 4, {}),
+                ('SERVER', 'Servidor', 5, {}),
+                ('MEDIA_CONVERTER', 'Media Converter', 6, {})
+            ],
+            'Tipos de Puerto': [
+                ('Gigabit', 'Gigabit', 1, {}),
+                ('SFP', 'SFP', 2, {}),
+                ('SFP+', 'SFP+', 3, {}),
+                ('POE', 'POE', 4, {}),
+                ('RJ45', 'RJ45', 5, {}),
+                ('SC/APC', 'SC/APC', 6, {}),
+                ('LC', 'LC', 7, {})
+            ],
+            'Tipos de Splitter': [
+                ('1x8', '1x8 (1 entrada, 8 salidas)', 1, {}),
+                ('1x16', '1x16 (1 entrada, 16 salidas)', 2, {})
+            ],
+            'Medios de Transmisión': [
+                ('FIBRA', 'Fibra Óptica', 1, {}),
+                ('UTP', 'Par Trenzado (UTP)', 2, {}),
+                ('SIAMEZ', 'Siamez/Híbrido', 3, {})
+            ],
+            'Roles de Usuario': [
+                ('super-admin', 'Super Admin', 1, {
+                    'view_admin': True, 
+                    'edit_admin_settings': True, 
+                    'manage_all_users': True, 
+                    'view_all_projects': True, 
+                    'edit_inventory': True, 
+                    'create_reports': True, 
+                    'resolve_reports': True
+                }),
+                ('admin', 'Administrador', 2, {
+                    'view_admin': True, 
+                    'edit_admin_settings': False, 
+                    'manage_all_users': False, 
+                    'view_all_projects': False, 
+                    'edit_inventory': True, 
+                    'create_reports': True, 
+                    'resolve_reports': True
+                }),
+                ('tecnico', 'Técnico', 3, {
+                    'view_admin': False, 
+                    'edit_admin_settings': False, 
+                    'manage_all_users': False, 
+                    'view_all_projects': False, 
+                    'edit_inventory': False, 
+                    'create_reports': True, 
+                    'resolve_reports': False
+                }),
+                ('cliente', 'Cliente', 4, {
+                    'view_admin': False, 
+                    'edit_admin_settings': False, 
+                    'manage_all_users': False, 
+                    'view_all_projects': False, 
+                    'edit_inventory': False, 
+                    'create_reports': True, 
+                    'resolve_reports': False,
+                    'is_restricted_view': True
+                })
+            ]
+        }
+
+        for list_name, items in master_lists_data.items():
+            cur.execute("INSERT INTO master_lists (name) VALUES (%s) ON CONFLICT (name) DO NOTHING RETURNING id", (list_name,))
+            res = cur.fetchone()
+            if res:
+                list_id = res[0]
+            else:
+                cur.execute("SELECT id FROM master_lists WHERE name = %s", (list_name,))
+                list_id = cur.fetchone()[0]
+            
+            for val, lab, sort, perms in items:
+                cur.execute("""
+                    INSERT INTO master_list_items (list_id, value, label, sort_order, permissions)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (list_id, value) DO UPDATE SET permissions = EXCLUDED.permissions
+                """, (list_id, val, lab, sort, json.dumps(perms)))
+        
+        print("✓ Master lists ensured/seeded.")
+
+        # 5. Create Indexes
         cur.execute("CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(type);")
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_from ON connections("from");')
         cur.execute('CREATE INDEX IF NOT EXISTS idx_connections_to ON connections("to");')

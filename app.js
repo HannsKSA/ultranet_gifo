@@ -475,6 +475,23 @@ class UserManager {
             }
 
             this.profile = data;
+
+            // Fetch Permissions for Role
+            try {
+                const { data: roleItem } = await supabaseClient
+                    .from('master_list_items')
+                    .select('permissions, master_lists!inner(name)')
+                    .eq('value', this.profile.role)
+                    .eq('master_lists.name', 'Roles de Usuario')
+                    .maybeSingle();
+
+                this.profile.permissions = (roleItem && roleItem.permissions) ? roleItem.permissions : {};
+                console.log("Loaded Permissions:", this.profile.permissions);
+            } catch (e) {
+                console.error("Error loading role permissions:", e);
+                this.profile.permissions = {};
+            }
+
             this.hideLogin(); // Hide login modal after successful profile load
             this.updateHeader();
 
@@ -505,26 +522,32 @@ class UserManager {
 
         if (profileEl && this.profile) {
             profileEl.innerText = `${this.profile.role.toUpperCase()} | ${this.user.email}`;
+
+            // Handle Admin Button visibility based on permissions
+            const btnAdmin = document.getElementById('btn-admin-panel');
+            if (btnAdmin) {
+                const perms = this.profile.permissions || {};
+                btnAdmin.style.display = perms.view_admin ? 'flex' : 'none';
+            }
         }
     }
 
     async loadProjects() {
         this.projectList.innerHTML = '<p class="empty-state">Cargando...</p>';
-        // Don't auto-open the modal anymore
-        // this.projectModal.classList.remove('hidden');
+        const perms = this.profile.permissions || {};
 
-        // Hide Create Button for non-admins
+        // Hide Create Button if they can't manage projects
         const btnCreate = document.getElementById('btn-create-project');
-        if (this.profile.role === 'tecnico' || this.profile.role === 'cliente') {
-            if (btnCreate) btnCreate.style.display = 'none';
-        } else {
+        if (perms.view_all_projects) {
             if (btnCreate) btnCreate.style.display = 'block';
+        } else {
+            if (btnCreate) btnCreate.style.display = 'none';
         }
 
         let projects = [];
 
         try {
-            if (this.profile.role === 'super-admin') {
+            if (perms.view_all_projects) {
                 const { data } = await supabaseClient.from('projects').select('*');
                 projects = data || [];
             } else {
@@ -537,7 +560,6 @@ class UserManager {
 
                 let assigned = [];
                 if (assignedIds.length > 0) {
-                    // Use 'in' filter properly
                     const { data } = await supabaseClient.from('projects').select('*').in('id', assignedIds);
                     assigned = data || [];
                 }
@@ -757,15 +779,15 @@ class AdminManager {
                      </div>
                      <div id="admin-cable-types-list"></div>
                 </div>
-                <div id="admin-content-lists" class="hidden" style="flex:1; overflow-y:auto; padding: 10px;">
-                     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
-                        <h4>Gestión Maestra de Elementos</h4>
-                        <button class="action-btn" style="width:auto; padding:5px 12px;" onclick="window.adminManager.refreshLists()">🔄 Refrescar</button>
+                <div id="admin-content-lists" class="hidden" style="flex:1; display:flex; height:100%; overflow:hidden;">
+                     <div id="admin-master-lists-sidebar" style="width:200px; border-right:1px solid #eee; padding:10px; overflow-y:auto; background:#f9f9f9;">
+                         <!-- Sidebar for master list names -->
                      </div>
-                     <div class="list-tabs" style="display:flex; gap:10px; margin-bottom:10px; padding:5px; background:#f4f4f4; border-radius:4px;">
-                        <button id="tab-list-nodes" class="action-btn" style="flex:1; font-size:12px; height:30px;" onclick="window.adminManager.switchListSubTab('nodes')">Nodos</button>
-                        <button id="tab-list-conns" class="btn-secondary" style="flex:1; font-size:12px; height:30px;" onclick="window.adminManager.switchListSubTab('conns')">Cables</button>
+                     <div id="admin-master-list-items-container" style="flex:1; padding:15px; overflow-y:auto;">
+                         <!-- Items table -->
+                         <p style="color:#888;">Selecciona una lista a la izquierda</p>
                      </div>
+                </div>
                      <div id="admin-list-nodes-container"></div>
                      <div id="admin-list-conns-container" class="hidden"></div>
                 </div>
@@ -829,6 +851,19 @@ class AdminManager {
             }
             return;
         }
+
+        const perms = (window.userManager && window.userManager.profile) ? window.userManager.profile.permissions : {};
+
+        // Hide administrative setup tabs if not allowed to edit settings
+        const adminTabs = ['tab-node-types', 'tab-cable-types', 'tab-lists'];
+        adminTabs.forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.display = perms.edit_admin_settings ? 'block' : 'none';
+        });
+
+        // Hide "New Project" button if not allowed to edit settings
+        const btnNewProj = document.querySelector('[onclick*="openCreateProjectPrompt"]');
+        if (btnNewProj) btnNewProj.style.display = perms.edit_admin_settings ? 'block' : 'none';
 
         const locked = await this.setLock(true);
         if (locked) {
@@ -910,15 +945,30 @@ class AdminManager {
         if (tab === 'projects') this.refreshProjects();
         if (tab === 'node-types') this.refreshNodeTypes();
         if (tab === 'cable-types') this.refreshCableTypes();
-        if (tab === 'lists') this.refreshLists();
+        if (tab === 'lists') this.refreshMasterLists();
     }
 
     async refreshUsers() {
         const tbody = document.getElementById('admin-user-list');
         tbody.innerHTML = '<tr><td colspan="3">Cargando...</td></tr>';
+
+        const perms = (window.userManager && window.userManager.profile) ? window.userManager.profile.permissions : {};
+
         try {
-            const { data, error } = await supabaseClient.from('user_profiles').select('*').order('email');
+            let { data, error } = await supabaseClient.from('user_profiles').select('*').order('email');
             if (error) throw error;
+
+            // Filter users if not super-admin
+            if (!perms.manage_all_users) {
+                const myProjects = (window.userManager.projects || []).map(p => p.id);
+                if (myProjects.length > 0) {
+                    const { data: assignments } = await supabaseClient.from('project_assignments').select('user_id').in('project_id', myProjects);
+                    const myUserIds = assignments ? assignments.map(a => a.user_id) : [];
+                    data = data.filter(u => myUserIds.includes(u.id) || u.id === window.userManager.user.id);
+                } else {
+                    data = data.filter(u => u.id === window.userManager.user.id);
+                }
+            }
             tbody.innerHTML = '';
             data.forEach(u => {
                 const tr = document.createElement('tr');
@@ -1316,12 +1366,91 @@ class AdminManager {
             this.refreshCableTypes();
             if (window.uiManager) window.uiManager.loadCableTypes();
         } catch (e) {
-            console.error("Error saving cable type:", e);
             alert("Error al guardar tipo: " + e.message);
         }
     }
 
-    async refreshLists() {
+    async renderMasterListItems() {
+        const container = document.getElementById('admin-master-list-items-container');
+        if (!this.activeListId) return;
+
+        try {
+            const { data: list, error: lError } = await supabaseClient.from('master_lists').select('*').eq('id', this.activeListId).single();
+            const { data: items, error: iError } = await supabaseClient.from('master_list_items').select('*').eq('list_id', this.activeListId).order('sort_order');
+
+            if (lError || iError) throw (lError || iError);
+
+            let html = `
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <h5 style="margin:0;">Elementos de: ${list.name}</h5>
+                    <button class="action-btn" style="width:auto; padding:3px 8px; font-size:11px; background:#2ecc71;" 
+                            onclick="window.adminManager.renderMasterListItemModal('${list.id}')">+ Nuevo Item</button>
+                </div>
+                <table style="width:100%; font-size:12px; border-collapse:collapse;">
+                    <thead>
+                        <tr style="background:#f9f9f9; text-align:left;">
+                            <th style="padding:5px; border-bottom:1px solid #eee;">Valor (Key)</th>
+                            <th style="padding:5px; border-bottom:1px solid #eee;">Etiqueta (Display)</th>
+                            <th style="padding:5px; border-bottom:1px solid #eee;">Acciones</th>
+                        </tr>
+                    </thead>
+                    <tbody>`;
+
+            items.forEach(item => {
+                html += `
+                    <tr>
+                        <td style="padding:5px; border-bottom:1px solid #eee;">${item.value}</td>
+                        <td style="padding:5px; border-bottom:1px solid #eee;">${item.label}</td>
+                        <td style="padding:5px; border-bottom:1px solid #eee;">
+                            <button class="btn-secondary" style="padding:2px 5px; font-size:10px;" onclick="window.adminManager.editMasterListItem('${item.id}')">✏️</button>
+                            <button class="btn-danger" style="padding:2px 5px; font-size:10px;" onclick="window.adminManager.deleteMasterListItem('${item.id}')">🗑️</button>
+                        </td>
+                    </tr>`;
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        } catch (e) {
+            container.innerHTML = `<p style="color:red">Error: ${e.message}</p>`;
+        }
+    }
+
+    async refreshMasterLists() {
+        const sidebar = document.getElementById('admin-master-lists-sidebar');
+        const container = document.getElementById('admin-master-list-items-container');
+        if (!sidebar || !container) return;
+
+        try {
+            const { data: lists, error } = await supabaseClient.from('master_lists').select('*').order('name');
+            if (error) throw error;
+
+            let html = '<div style="display:flex; flex-direction:column; gap:5px;">';
+            lists.forEach(l => {
+                const isActive = this.activeListId === l.id;
+                html += `
+                    <button class="${isActive ? 'action-btn' : 'btn-secondary'}" 
+                            style="text-align:left; font-size:12px; padding:8px;" 
+                            onclick="window.adminManager.selectMasterList('${l.id}')">
+                        ${l.name}
+                    </button>`;
+            });
+            html += '</div>';
+            sidebar.innerHTML = html;
+
+            if (this.activeListId) {
+                this.renderMasterListItems();
+            }
+        } catch (e) {
+            sidebar.innerHTML = `<p style="color:red; font-size:11px;">Error: ${e.message}</p>`;
+        }
+    }
+
+    async selectMasterList(id) {
+        this.activeListId = id;
+        this.refreshMasterLists();
+    }
+
+    async refreshInfrastructureLists() {
         const nodesContainer = document.getElementById('admin-list-nodes-container');
         const connsContainer = document.getElementById('admin-list-conns-container');
         if (!nodesContainer || !connsContainer) return;
@@ -1424,6 +1553,152 @@ class AdminManager {
         });
         html += `</tbody></table>`;
         container.innerHTML = html;
+    }
+
+    async renderMasterListItemModal(listId, item = null) {
+        const isEditing = !!item;
+        const { data: listData } = await supabaseClient.from('master_lists').select('name').eq('id', listId).single();
+        const isRoleList = listData && listData.name === 'Roles de Usuario';
+        const isRackEquipList = listData && listData.name === 'Tipos de Equipo Rack';
+
+        const perms = item ? (item.permissions || {}) : {};
+
+        const modal = document.createElement('div');
+        modal.id = 'modal-master-list-item';
+        modal.className = 'modal-overlay';
+        modal.style.zIndex = '3500';
+
+        let valueFieldHtml = `<input type="text" id="mli-value" class="form-input" value="${item ? item.value : ''}" ${isEditing ? 'disabled' : ''}>`;
+
+        if (isRackEquipList && !isEditing) {
+            // Dropdown of rackable node types
+            const { data: nodeTypes } = await supabaseClient.from('node_types').select('name').eq('is_rackable', true).order('name');
+            valueFieldHtml = `
+                <select id="mli-value" class="form-select">
+                    <option value="">Seleccione tipo de nodo...</option>
+                    ${(nodeTypes || []).map(nt => `<option value="${nt.name}">${nt.name}</option>`).join('')}
+                </select>`;
+        }
+
+        let permissionsHtml = '';
+        if (isRoleList) {
+            // ... (keep the permissions editor)
+            const availablePerms = [
+                { id: 'view_admin', label: 'Acceso a Panel Admin' },
+                { id: 'edit_admin_settings', label: 'Editar Tipos/Listas (Admin Settings)' },
+                { id: 'manage_all_users', label: 'Gestionar todos los usuarios' },
+                { id: 'view_all_projects', label: 'Ver todos los proyectos' },
+                { id: 'edit_inventory', label: 'Editar Inventario (Nodos/Cables)' },
+                { id: 'create_reports', label: 'Crear Reportes de Daño' },
+                { id: 'resolve_reports', label: 'Resolver Reportes de Daño' },
+                { id: 'is_restricted_view', label: 'Vista Restringida (Solo infraestructura asignada)' }
+            ];
+
+            permissionsHtml = `
+                <div style="margin-top:15px; background:#f8f9fa; padding:10px; border-radius:4px; max-height:200px; overflow-y:auto;">
+                    <label style="font-weight:600; display:block; margin-bottom:8px;">Permisos del Rol:</label>
+                    <div style="display:flex; flex-direction:column; gap:5px;">
+                        ${availablePerms.map(p => `
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <input type="checkbox" id="perm-${p.id}" ${perms[p.id] ? 'checked' : ''} style="width:16px; height:16px;">
+                                <label for="perm-${p.id}" style="font-size:12px; cursor:pointer;">${p.label}</label>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>`;
+        }
+
+        modal.innerHTML = `
+            <div class="modal-content" style="max-width:400px; padding:20px;">
+                <h3>${isEditing ? 'Editar Elemento' : 'Nuevo Elemento'}</h3>
+                <div class="form-group">
+                    <label class="form-label">${isRackEquipList ? 'Tipo de Nodo Rackeable' : 'Valor (ID/Key)'}</label>
+                    ${valueFieldHtml}
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Etiqueta (Display)</label>
+                    <input type="text" id="mli-label" class="form-input" value="${item ? item.label : ''}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Orden (Prioridad)</label>
+                    <input type="number" id="mli-sort" class="form-input" value="${item ? item.sort_order : '0'}">
+                </div>
+                ${permissionsHtml}
+                <div class="form-actions" style="margin-top:20px;">
+                    <button class="btn-secondary" onclick="document.body.removeChild(this.closest('.modal-overlay'))">Cancelar</button>
+                    <button class="action-btn" id="btn-save-master-item">Guardar</button>
+                </div>
+            </div>`;
+
+        document.body.appendChild(modal);
+
+        if (isRackEquipList && !isEditing) {
+            const valSelect = document.getElementById('mli-value');
+            const labInput = document.getElementById('mli-label');
+            valSelect.onchange = () => {
+                if (valSelect.value) labInput.value = valSelect.value;
+            };
+        }
+
+        document.getElementById('btn-save-master-item').onclick = async () => {
+            const val = document.getElementById('mli-value').value.trim();
+            const lab = document.getElementById('mli-label').value.trim();
+            const sort = parseInt(document.getElementById('mli-sort').value) || 0;
+
+            if (!val || !lab) return alert("Faltan campos requeridos");
+
+            const itemPerms = {};
+            if (isRoleList) {
+                const pIds = ['view_admin', 'edit_admin_settings', 'manage_all_users', 'view_all_projects', 'edit_inventory', 'create_reports', 'resolve_reports', 'is_restricted_view'];
+                pIds.forEach(p => {
+                    itemPerms[p] = document.getElementById(`perm-${p}`).checked;
+                });
+            }
+
+            const payload = {
+                list_id: listId,
+                value: val,
+                label: lab,
+                sort_order: sort,
+                permissions: itemPerms
+            };
+
+            try {
+                let error;
+                if (isEditing) {
+                    const { error: e } = await supabaseClient.from('master_list_items').update(payload).eq('id', item.id);
+                    error = e;
+                } else {
+                    const { error: e } = await supabaseClient.from('master_list_items').insert(payload);
+                    error = e;
+                }
+
+                if (error) throw error;
+                document.body.removeChild(modal);
+                this.renderMasterListItems();
+                if (window.uiManager) window.uiManager.loadMasterLists();
+            } catch (e) {
+                alert("Error: " + e.message);
+            }
+        };
+    }
+
+    async editMasterListItem(itemId) {
+        try {
+            const { data: item, error } = await supabaseClient.from('master_list_items').select('*').eq('id', itemId).single();
+            if (error) throw error;
+            this.renderMasterListItemModal(item.list_id, item);
+        } catch (e) { alert("Error: " + e.message); }
+    }
+
+    async deleteMasterListItem(itemId) {
+        if (!confirm("¿Eliminar este elemento?")) return;
+        try {
+            const { error } = await supabaseClient.from('master_list_items').delete().eq('id', itemId);
+            if (error) throw error;
+            this.renderMasterListItems();
+            if (window.uiManager) window.uiManager.loadMasterLists();
+        } catch (e) { alert("Error: " + e.message); }
     }
 
     async deleteCableType(id) {
@@ -1722,11 +1997,22 @@ class InventoryManager {
         }
     }
 
-    getNodes() {
-        return this.nodes;
+    async getConnectionsIntersectingNode(nodeId) {
+        const node = this.getNode(nodeId);
+        if (!node) return [];
+        return this.connections.filter(c => {
+            if (c.from === nodeId || c.to === nodeId) return true;
+            // Precise check if node coordinates are in the path
+            if (c.path && Array.isArray(c.path)) {
+                return c.path.some(p => Math.abs(p[0] - node.lat) < 0.000001 && Math.abs(p[1] - node.lng) < 0.000001);
+            }
+            return false;
+        });
     }
 
-    // Connections
+    getConnections() {
+        return this.connections;
+    }
     async addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort, sectionType, identification) {
         if (!this.projectId) {
             alert("No hay un proyecto activo. Por favor selecciona o crea un proyecto primero.");
@@ -1967,7 +2253,8 @@ class InventoryManager {
 
             if (equipment.portGroups && equipment.portGroups.length > 0) {
                 equipment.portGroups.forEach(group => {
-                    for (let i = 1; i <= parseInt(group.qty); i++) {
+                    const groupQty = parseInt(group.qty || group.count || 0);
+                    for (let i = 1; i <= groupQty; i++) {
                         equipment.ports.push({
                             id: `${equipment.id}-p${globalPortIndex}`,
                             number: globalPortIndex,
@@ -2285,6 +2572,7 @@ class UIManager {
             equipPortQty: document.getElementById('eq-pt-qty'),
             equipIsProvider: document.getElementById('equip-is-provider'),
             equipProviderGroup: document.getElementById('equip-provider-group'),
+            dynamicEquipFields: document.getElementById('dynamic-equip-fields'),
             btnCancelConn: document.getElementById('btn-cancel-conn'),
             btnCancelEquip: document.getElementById('btn-cancel-equip')
         };
@@ -2439,6 +2727,11 @@ class UIManager {
         // Setup listeners that don't depend on project
         this.setupEventListeners();
         this.setupNavigationButtons();
+
+        // Load global types immediately so they are available even without a project
+        this.loadCustomNodeTypes();
+        this.loadCableTypes();
+        this.loadMasterLists();
     }
 
     async loadProject(projectId, userRole) {
@@ -2448,11 +2741,16 @@ class UIManager {
         await this.loadCableTypes();
         this.loadExistingData();
 
-        // Apply Role Restrictions
-        if (this.userRole === 'tecnico' || this.userRole === 'cliente') {
+        // Apply Role Restrictions from permissions
+        const perms = (window.userManager && window.userManager.profile) ? window.userManager.profile.permissions : {};
+
+        // Restriction: Edit Inventory
+        if (perms.edit_inventory === false) {
             // Hide "Add Node" button
-            document.getElementById('view-add-node').classList.add('hidden'); // This is the form
-            // Hide quick action
+            const addNodeForm = document.getElementById('view-add-node');
+            if (addNodeForm) addNodeForm.classList.add('hidden');
+
+            // Hide quick action buttons
             const btnAdd = document.getElementById('btn-add-node');
             if (btnAdd) btnAdd.style.display = 'none';
 
@@ -2566,7 +2864,11 @@ class UIManager {
 
         document.addEventListener('marker:clicked', (e) => {
             if (this.isConnecting) {
-                this.completeConnection(e.detail);
+                const node = this.inventoryManager.getNode(e.detail);
+                if (node) {
+                    this.addConnectionWaypoint({ lat: node.lat, lng: node.lng });
+                    console.log("Added node waypoint:", node.name);
+                }
             } else {
                 this.showNodeDetails(e.detail);
             }
@@ -2596,12 +2898,7 @@ class UIManager {
 
         // Equipment Modal Actions
         this.modalForms.equipType.addEventListener('change', (e) => {
-            if (e.target.value === 'ROUTER') {
-                this.modalForms.equipProviderGroup.classList.remove('hidden');
-            } else {
-                this.modalForms.equipProviderGroup.classList.add('hidden');
-                this.modalForms.equipIsProvider.checked = false;
-            }
+            this.renderDynamicEquipFields(e.target.value);
         });
 
         // Details Actions
@@ -2815,33 +3112,24 @@ class UIManager {
         this.modals.equipment.classList.remove('hidden');
         this.modalForms.equipName.focus();
 
-        // Populate Equipment Types dynamically
+        // Populate Equipment Types from Master Lists if available, else standard
         const select = this.modalForms.equipType;
         const currentVal = select.value || 'SWITCH';
         select.innerHTML = '';
 
-        // Standard types
-        const standardTypes = ['ROUTER', 'SWITCH', 'PATCH PANEL', 'ODF', 'SERVER', 'MEDIA_CONVERTER', 'ASU'];
+        const standardTypes = ['OLT', 'ODF', 'SWITCH', 'ROUTER', 'SERVER', 'MEDIA_CONVERTER'];
 
-        // Combine standard types with rackable custom types
-        const availableTypes = new Set(standardTypes);
-        this.customNodeTypes.filter(t => t.is_rackable).forEach(t => availableTypes.add(t.name));
-
-        Array.from(availableTypes).sort().forEach(t => {
+        standardTypes.forEach(t => {
             const opt = document.createElement('option');
             opt.value = t;
             opt.textContent = t;
             select.appendChild(opt);
         });
 
-        // Restore value if still available, or default to SWITCH
-        if ([...availableTypes].includes(currentVal)) {
+        if (Array.from(select.options).some(o => o.value === currentVal)) {
             select.value = currentVal;
-        } else {
-            select.value = 'SWITCH';
         }
 
-        this.modalForms.equipType.dispatchEvent(new Event('change'));
         this.modalForms.equipIsProvider.checked = false;
 
         // Reset Port Groups
@@ -3033,27 +3321,32 @@ class UIManager {
         alert("Tendido Libre Activo:\n1. Haz clic en el mapa para iniciar y agregar puntos.\n2. Usa 'Finalizar Aquí' para terminar.");
     }
 
-    startConnectionFlow() {
+    async startConnectionFlow() {
         if (!this.currentNodeId) return;
         const node = this.inventoryManager.getNode(this.currentNodeId);
         if (!node) return;
 
-        this.isConnecting = true;
-        this.connectionSourceId = node.id;
-        this.connectionWaypoints = [[node.lat, node.lng]];
-        this.selectedSourcePort = null;
-        this.selectedTargetPort = null;
-        this.mapManager.clearTempPolyline();
+        // Check for intersecting cables
+        const intersectingCables = await this.inventoryManager.getConnectionsIntersectingNode(this.currentNodeId);
 
-        const btn = this.details.btnConnect;
-        this._originalBtnText.connect = btn.textContent;
-        btn.textContent = "Modo Trazado (Esc para cancelar)";
-        btn.disabled = true;
+        if (intersectingCables.length === 0) {
+            alert("⚠️ No hay cables pasando por este nodo. Primero debes usar 'Tender Cable' para trazar una ruta que pase por aquí.");
+            return;
+        }
 
-        // Add standalone closure button
-        this.addStandaloneClosureUI();
-
-        alert("Modo Trazado Activo:\n1. Haz clic en el mapa para agregar puntos de quiebre.\n2. Haz clic en el nodo destino para finalizar.\n3. O usa el botón 'Finalizar Aquí' para un tramo sin nodo.");
+        // Logical connection depends on node type
+        if (node.type === 'RACK') {
+            this.currentRackNodeId = node.id;
+            this.switchView('rack');
+            alert("Selecciona un puerto en el Rack para iniciar el parcheo a uno de los cables disponibles.");
+        } else if (node.type === 'NAP' || node.type === 'MUFLA') {
+            this.currentSplitterNodeId = node.id;
+            this.showSplitterView();
+            alert("Gestiona hilos de cables desde la vista de splitters o fusiones.");
+        } else {
+            this.currentSplitterNodeId = node.id;
+            this.openFusionModal(false);
+        }
     }
 
     addStandaloneClosureUI() {
@@ -3082,7 +3375,7 @@ class UIManager {
 
     completeStandaloneConnection() {
         if (!this.isConnecting || this.connectionWaypoints.length < 1) return;
-        this.completeConnection(null);
+        this.completeConnection();
     }
 
     addConnectionWaypoint(latlng) {
@@ -3098,74 +3391,27 @@ class UIManager {
         }
     }
 
-    completeConnection(targetNodeId) {
-        console.log('completeConnection called with:', targetNodeId);
-        console.log('isConnecting:', this.isConnecting);
-        console.log('connectionSourceId:', this.connectionSourceId);
-
-        if (!this.isConnecting || (this.connectionSourceId === null && this.connectionWaypoints.length < 1)) return; // For standalone, need at least one point
+    async completeConnection() {
+        if (!this.isConnecting || this.connectionWaypoints.length < 2) {
+            alert("Agrega al menos dos puntos para el tendido de cable.");
+            return;
+        }
 
         this.removeStandaloneClosureUI();
 
-        if (targetNodeId && targetNodeId === this.connectionSourceId) {
-            alert("No puedes conectar un nodo consigo mismo.");
-            this.cancelConnectionFlow(); // Reset state
-            return;
-        }
+        // Detect potential end nodes from waypoints
+        const firstPoint = this.connectionWaypoints[0];
+        const lastPoint = this.connectionWaypoints[this.connectionWaypoints.length - 1];
 
-        const sourceNode = this.connectionSourceId ? this.inventoryManager.getNode(this.connectionSourceId) : null;
-        const targetNode = targetNodeId ? this.inventoryManager.getNode(targetNodeId) : null;
+        const nodes = this.inventoryManager.getNodes();
+        const startNode = nodes.find(n => Math.abs(n.lat - firstPoint[0]) < 0.00001 && Math.abs(n.lng - firstPoint[1]) < 0.00001);
+        const endNode = nodes.find(n => Math.abs(n.lat - lastPoint[0]) < 0.00001 && Math.abs(n.lng - lastPoint[1]) < 0.00001);
 
-        console.log('Source Node:', sourceNode);
-        console.log('Target Node:', targetNode);
+        this.connectionSourceId = startNode ? startNode.id : null;
+        this.pendingConnectionTarget = endNode ? endNode.id : null;
 
-        // If source is null (standalone cabling), and no waypoints, it's an invalid state.
-        if (this.connectionSourceId === null && this.connectionWaypoints.length === 0) {
-            alert("No se han agregado puntos para el tendido libre.");
-            this.cancelConnectionFlow();
-            return;
-        }
-
-        // If source is null and target is null, it's a standalone cable with no end node.
-        // The last waypoint becomes the "end" of the cable.
-        if (this.connectionSourceId === null && targetNode === null && this.connectionWaypoints.length > 0) {
-            this.pendingConnectionTarget = null; // Explicitly set to null for standalone
-            this.showConnectionModal();
-            return;
-        }
-
-
-        if (sourceNode || targetNode) { // At least one end is a node
-            this.pendingConnectionTarget = targetNode; // Can be null now
-
-            // Check if source or target is a RACK
-            const sourceHasPorts = sourceNode && sourceNode.rack && sourceNode.rack.length > 0;
-            const targetHasPorts = targetNode && targetNode.rack && targetNode.rack.length > 0;
-
-            if (sourceHasPorts || targetHasPorts) {
-                console.log('Rack connection detected');
-                if (sourceHasPorts && targetHasPorts) {
-                    this.handleRackConnection(sourceNode, targetNode);
-                } else if (sourceHasPorts) {
-                    // Standalone from a rack: only select source port
-                    this.openRackPortSelect(sourceNode.id, true, () => {
-                        this.showConnectionModal();
-                    });
-                } else if (targetHasPorts) {
-                    // Standalone to a rack: only select target port
-                    this.openRackPortSelect(targetNode.id, false, () => {
-                        this.showConnectionModal();
-                    });
-                }
-            } else {
-                console.log('Normal connection (no rack ports involved)');
-                this.showConnectionModal();
-            }
-        } else {
-            // This case should be handled by the `if (this.connectionSourceId === null && targetNode === null)` block above
-            // but as a fallback, if somehow we get here without source/target nodes, just show modal.
-            this.showConnectionModal();
-        }
+        // Show connection modal for cable properties
+        this.showConnectionModal();
     }
 
     handleRackConnection(sourceNode, targetNode) {
@@ -3451,6 +3697,14 @@ class UIManager {
 
     addEquipmentToRack() {
         this.showEquipmentModal();
+        // Clear previous dynamic fields
+        this.modalForms.dynamicEquipFields.innerHTML = '';
+        // Add listener for equipType change to render dynamic fields
+        this.modalForms.equipType.removeEventListener('change', this.equipTypeChangeListener); // Remove old listener if exists
+        this.equipTypeChangeListener = () => this.renderDynamicEquipFields(this.modalForms.equipType.value);
+        this.modalForms.equipType.addEventListener('change', this.equipTypeChangeListener);
+        // Render initial dynamic fields based on default/current type
+        this.renderDynamicEquipFields(this.modalForms.equipType.value);
     }
 
     async finalizeAddEquipment() {
@@ -3460,9 +3714,6 @@ class UIManager {
         const isProvider = this.modalForms.equipIsProvider.checked;
 
         if (!name) return alert("Nombre requerido");
-        if (portGroups.length === 0 && type !== 'MUFLA') {
-            if (!confirm("No has añadido puertos. ¿Continuar?")) return;
-        }
 
         const equipment = {
             id: Date.now().toString(),
@@ -3474,13 +3725,10 @@ class UIManager {
 
         try {
             await this.inventoryManager.addEquipmentToRack(this.currentRackNodeId, equipment);
-
-            // Get updated node and refresh view
-            const updatedNode = this.inventoryManager.getNode(this.currentRackNodeId);
-            this.renderRackList(updatedNode);
-
             this.closeModal('equipment');
-            this.modalForms.equipment.reset();
+            // Refresh rack view if it's open
+            const node = this.inventoryManager.getNode(this.currentRackNodeId);
+            if (node) this.renderRackList(node);
         } catch (e) {
             console.error("Error adding equipment:", e);
             alert("Error al añadir equipo: " + e.message);
@@ -4426,15 +4674,25 @@ class UIManager {
             this.details.btnViewSplitters.classList.add('hidden');
         }
 
-        // Connect Button: Only if node has equipment/ports configured
-        const canConnect = node.rack && node.rack.length > 0;
+        // Connect Button: Only if node has equipment/ports OR splitters OR cables passing through
+        const intersectingCables = this.inventoryManager.getConnections().filter(c => {
+            if (c.from === node.id || c.to === node.id) return true;
+            return c.path && c.path.some(p => Math.abs(p[0] - node.lat) < 0.000001 && Math.abs(p[1] - node.lng) < 0.000001);
+        });
+
+        const hasEquipment = node.rack && node.rack.length > 0;
+        const hasSplitters = node.splitters && node.splitters.length > 0;
+        const hasCables = intersectingCables.length > 0;
+
+        const canConnect = hasEquipment || hasSplitters || hasCables;
         this.details.btnConnect.disabled = !canConnect;
+
         if (!canConnect) {
-            this.details.btnConnect.title = "Configura puertos antes de conectar";
+            this.details.btnConnect.title = "No hay equipos, splitters ni cables disponibles para conectar en este nodo.";
             this.details.btnConnect.style.opacity = "0.5";
             this.details.btnConnect.style.cursor = "not-allowed";
         } else {
-            this.details.btnConnect.title = "";
+            this.details.btnConnect.title = hasCables ? "Realizar parcheos o fusiones lógicoas" : "Configura cables primero";
             this.details.btnConnect.style.opacity = "1";
             this.details.btnConnect.style.cursor = "pointer";
         }
@@ -4482,33 +4740,69 @@ class UIManager {
 
     async loadCustomNodeTypes() {
         try {
-            const { data, error } = await supabaseClient.from('node_types').select('*');
+            const { data, error } = await supabaseClient.from('node_types').select('*').order('name');
             if (error) throw error;
-            this.customNodeTypes = data || [];
-            this.updateNodeTypeOptions();
+            this.customNodeTypes = data;
+
+            // Re-populate type select in add form
+            if (this.form && this.form.type) {
+                const current = this.form.type.value;
+                this.form.type.innerHTML = '<option value="MUFLA">Mufla</option><option value="NAP">NAP</option><option value="ONU">ONU (Cliente)</option><option value="RACK">Rack / Nodo Core</option>';
+                this.customNodeTypes.forEach(t => {
+                    const opt = document.createElement('option');
+                    opt.value = t.name;
+                    opt.textContent = t.name;
+                    this.form.type.appendChild(opt);
+                });
+                this.form.type.value = current;
+            }
         } catch (e) {
             console.error("Error loading custom node types:", e);
         }
     }
 
-    updateNodeTypeOptions() {
-        const select = this.form.type;
-        const currentVal = select.value;
-        select.innerHTML = '<option value="">Seleccione tipo...</option>';
+    async loadMasterLists() {
+        try {
+            const { data, error } = await supabaseClient.from('master_lists').select('*, items:master_list_items(*)');
+            if (error) throw error;
+            this.masterLists = data;
+            this.populateMasterListSelects();
+        } catch (e) {
+            console.error("Error loading master lists:", e);
+        }
+    }
 
-        const sortedTypes = [...this.customNodeTypes].sort((a, b) => a.name.localeCompare(b.name));
+    populateMasterListSelects() {
+        if (!this.masterLists) return;
 
-        sortedTypes.forEach(t => {
-            const opt = document.createElement('option');
-            opt.value = t.name;
-            opt.textContent = t.name;
-            select.appendChild(opt);
-        });
+        // Populate Rack Equipment Types
+        const rackList = this.masterLists.find(l => l.name === 'Tipos de Equipo Rack');
+        if (rackList && this.modalForms.equipType) {
+            const select = this.modalForms.equipType;
+            const current = select.value;
+            select.innerHTML = '';
+            rackList.items.sort((a, b) => a.sort_order - b.sort_order).forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item.value;
+                opt.textContent = item.label;
+                select.appendChild(opt);
+            });
+            if (current) select.value = current;
+        }
 
-        // Restore value if it still exists
-        if (currentVal) {
-            const exists = Array.from(select.options).some(o => o.value === currentVal);
-            if (exists) select.value = currentVal;
+        // Populate Service Plans (if needed in ONU flow)
+        const plansList = this.masterLists.find(l => l.name === 'Planes de Servicio');
+        if (plansList && this.form.clientPlan) {
+            const select = this.form.clientPlan;
+            const current = select.value;
+            select.innerHTML = '<option value="">Seleccione plan...</option>';
+            plansList.items.sort((a, b) => a.sort_order - b.sort_order).forEach(item => {
+                const opt = document.createElement('option');
+                opt.value = item.value;
+                opt.textContent = item.label;
+                select.appendChild(opt);
+            });
+            if (current) select.value = current;
         }
     }
 
@@ -4542,6 +4836,134 @@ class UIManager {
         if (currentVal && this.cableTypes.find(t => t.name === currentVal)) {
             select.value = currentVal;
         }
+    }
+
+    renderDynamicEquipFields(typeName) {
+        const container = this.modalForms.dynamicEquipFields;
+        if (!container) return;
+        container.innerHTML = '';
+
+        const customType = this.customNodeTypes.find(t => t.name === typeName);
+        if (!customType || !customType.fields) {
+            // If no custom config, show default port config UI
+            container.innerHTML = `
+                <div class="form-group">
+                    <label class="form-label">Configuración de Puertos (Genérico)</label>
+                    <div style="background:#f1f1f1; padding:8px; border-radius:4px; margin-top:5px;">
+                        <div id="eq-ports-list-generic" style="margin-bottom:5px; font-size:11px;"></div>
+                        <div style="display:flex; gap:5px;">
+                            <select id="pt-type-generic" class="form-select" style="font-size:11px; padding:2px;">
+                                <option value="Gigabit">Gigabit</option>
+                                <option value="SFP">SFP</option>
+                                <option value="SFP+">SFP+</option>
+                                <option value="SC/APC">SC/APC</option>
+                            </select>
+                            <input type="number" id="pt-qty-generic" class="form-input" style="width:50px; font-size:11px; padding:2px;" placeholder="Cant">
+                            <button type="button" class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="window.uiManager.addPortGroupToDynamicEquipField('generic')">+</button>
+                        </div>
+                        <input type="hidden" id="dynamic-eq-field-generic" value="[]">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label" style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="dynamic-eq-field-provider" style="margin-right: 8px;">
+                        Es Proveedor de Internet
+                    </label>
+                </div>`;
+            return;
+        }
+
+        customType.fields.forEach(f => {
+            const safeName = f.name.replace(/[^a-z0-9]/gi, '_');
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            group.style.borderLeft = `3px solid ${customType.color || '#3498db'}`;
+            group.style.paddingLeft = '10px';
+            group.style.marginBottom = '15px';
+
+            let inputHtml = '';
+            if (f.type === 'ports') {
+                inputHtml = `
+                    <div id="ports-config-eq-${safeName}" style="background:#f1f1f1; padding:8px; border-radius:4px; margin-top:5px;">
+                        <div id="ports-list-eq-${safeName}" style="margin-bottom:5px; font-size:11px;"></div>
+                        <div style="display:flex; gap:5px;">
+                            <select id="pt-type-eq-${safeName}" class="form-select" style="font-size:11px; padding:2px;">
+                                <option value="Gigabit">Gigabit</option>
+                                <option value="SFP">SFP</option>
+                                <option value="SFP+">SFP+</option>
+                                <option value="SC/APC">SC/APC</option>
+                            </select>
+                            <input type="number" id="pt-qty-eq-${safeName}" class="form-input" style="width:50px; font-size:11px; padding:2px;" placeholder="Cant">
+                            <button type="button" class="btn-secondary" style="padding:2px 8px; font-size:11px;" onclick="window.uiManager.addPortGroupToDynamicEquipField('${safeName}')">+</button>
+                        </div>
+                        <input type="hidden" id="dynamic-eq-field-${safeName}" value="[]">
+                    </div>`;
+            } else if (f.type === 'select' && f.options) {
+                inputHtml = `<select class="form-select" id="dynamic-eq-field-${safeName}">
+                    ${f.options.map(o => `<option value="${o}">${o}</option>`).join('')}
+                </select>`;
+            } else if (f.type === 'checkbox') {
+                inputHtml = `<input type="checkbox" id="dynamic-eq-field-${safeName}">`;
+            } else {
+                inputHtml = `<input type="text" class="form-input" id="dynamic-eq-field-${safeName}" placeholder="${f.name}">`;
+            }
+
+            group.innerHTML = `<label class="form-label">${f.name}</label>${inputHtml}`;
+            container.appendChild(group);
+        });
+
+        // Always add provider checkbox if not present
+        if (!customType.fields.some(f => f.name === "Es Proveedor de Internet")) {
+            const group = document.createElement('div');
+            group.className = 'form-group';
+            group.innerHTML = `
+                <label class="form-label" style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="dynamic-eq-field-provider" style="margin-right: 8px;">
+                    Es Proveedor de Internet
+                </label>`;
+            container.appendChild(group);
+        }
+    }
+
+    addPortGroupToDynamicEquipField(safeName) {
+        let typeId, qtyId, listId, dataId;
+        if (safeName === 'generic') {
+            typeId = 'pt-type-generic';
+            qtyId = 'pt-qty-generic';
+            listId = 'eq-ports-list-generic';
+            dataId = 'dynamic-eq-field-generic';
+        } else {
+            typeId = `pt-type-eq-${safeName}`;
+            qtyId = `pt-qty-eq-${safeName}`;
+            listId = `ports-list-eq-${safeName}`;
+            dataId = `dynamic-eq-field-${safeName}`;
+        }
+
+        const type = document.getElementById(typeId).value;
+        const qtyStr = document.getElementById(qtyId).value;
+        const qty = parseInt(qtyStr);
+        const list = document.getElementById(listId);
+        const dataInput = document.getElementById(dataId);
+
+        if (!qty || qty <= 0) return;
+
+        const currentData = JSON.parse(dataInput.value || "[]");
+        currentData.push({ type, qty: qty });
+        dataInput.value = JSON.stringify(currentData);
+
+        // Update list display
+        const tag = document.createElement('span');
+        tag.className = 'badge';
+        tag.style.margin = '2px';
+        tag.style.display = 'inline-block';
+        tag.style.padding = '2px 6px';
+        tag.style.background = '#e0e0e0';
+        tag.style.borderRadius = '3px';
+        tag.style.fontSize = '10px';
+        tag.textContent = `${qty}x ${type}`;
+        list.appendChild(tag);
+
+        document.getElementById(qtyId).value = '';
     }
 
     renderDynamicFields(typeName) {
