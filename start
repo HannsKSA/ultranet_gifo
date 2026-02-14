@@ -179,17 +179,37 @@ def init_db():
                 END $$;
             """)
 
-        # 3. Create New Tables (Projects, Users, Assignments)
+        # Create New Tables (Projects, Users, Assignments)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS projects (
                 id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
                 name TEXT NOT NULL,
                 description TEXT,
                 created_by UUID,
+                admin_lock_user UUID,
+                admin_lock_timestamp TIMESTAMP WITH TIME ZONE,
                 created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
             );
         """)
         
+        # Migrations for projects table
+        project_migrations = [
+            ("projects", "admin_lock_user", "UUID"),
+            ("projects", "admin_lock_timestamp", "TIMESTAMP WITH TIME ZONE")
+        ]
+        for table, column, col_type in project_migrations:
+            cur.execute(f"""
+                DO $$ 
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns 
+                        WHERE table_name='{table}' AND column_name='{column}'
+                    ) THEN
+                        ALTER TABLE {table} ADD COLUMN {column} {col_type};
+                    END IF;
+                END $$;
+            """)
+
         cur.execute("""
             CREATE TABLE IF NOT EXISTS user_profiles (
                 id UUID PRIMARY KEY,

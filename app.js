@@ -723,8 +723,13 @@ class AdminManager {
         const btn = document.getElementById('btn-admin-panel');
         if (!btn) return;
 
-        btn.onclick = () => this.openAdminPanel();
-        btn.onmousedown = () => this.setLock(true);
+        btn.onclick = () => {
+            console.log("Admin button clicked");
+            this.openAdminPanel();
+        };
+
+        // Removed redundant onmousedown = setLock(true) to avoid race conditions
+        // as openAdminPanel already handles locking correctly.
 
         // Add hover effect
         btn.onmouseover = () => btn.style.backgroundColor = '#3498db';
@@ -779,17 +784,28 @@ class AdminManager {
                      </div>
                      <div id="admin-cable-types-list"></div>
                 </div>
-                <div id="admin-content-lists" class="hidden" style="flex:1; display:flex; height:100%; overflow:hidden;">
-                     <div id="admin-master-lists-sidebar" style="width:200px; border-right:1px solid #eee; padding:10px; overflow-y:auto; background:#f9f9f9;">
-                         <!-- Sidebar for master list names -->
+                <div id="admin-content-lists" class="hidden" style="flex:1; display:flex; flex-direction:column; height:100%; overflow:hidden;">
+                     <div style="display:flex; gap:10px; padding:10px; border-bottom:1px solid #eee; background:#f5f5f5; font-size: 12px;">
+                         <button class="action-btn" id="tab-list-master" style="width:auto; padding:5px 15px;" onclick="window.adminManager.switchListSubTab('master')">Listas Maestras</button>
+                         <button class="btn-secondary" id="tab-list-infra" style="width:auto; padding:5px 15px;" onclick="window.adminManager.switchListSubTab('infra')">Nodos y Cables</button>
                      </div>
-                     <div id="admin-master-list-items-container" style="flex:1; padding:15px; overflow-y:auto;">
-                         <!-- Items table -->
-                         <p style="color:#888;">Selecciona una lista a la izquierda</p>
+                     <div id="admin-list-master-container" style="flex:1; display:flex; overflow:hidden;">
+                         <div id="admin-master-lists-sidebar" style="width:200px; border-right:1px solid #eee; padding:10px; overflow-y:auto; background:#f9f9f9;">
+                             <!-- Sidebar for master list names -->
+                         </div>
+                         <div id="admin-master-list-items-container" style="flex:1; padding:15px; overflow-y:auto;">
+                             <!-- Items table -->
+                             <p style="color:#888;">Selecciona una lista a la izquierda</p>
+                         </div>
                      </div>
-                </div>
-                     <div id="admin-list-nodes-container"></div>
-                     <div id="admin-list-conns-container" class="hidden"></div>
+                     <div id="admin-list-infra-container" class="hidden" style="flex:1; padding:15px; overflow-y:auto;">
+                         <div style="display:flex; gap:10px; margin-bottom:10px; border-bottom:1px solid #eee; padding-bottom:5px;">
+                            <button class="action-btn" id="tab-infra-nodes" style="width:auto; padding:3px 10px; font-size:11px;" onclick="window.adminManager.switchInfraTab('nodes')">Nodos</button>
+                            <button class="btn-secondary" id="tab-infra-conns" style="width:auto; padding:3px 10px; font-size:11px;" onclick="window.adminManager.switchInfraTab('conns')">Cables</button>
+                         </div>
+                         <div id="admin-list-nodes-container"></div>
+                         <div id="admin-list-conns-container" class="hidden"></div>
+                     </div>
                 </div>
             </div>
         </div>`;
@@ -878,18 +894,24 @@ class AdminManager {
     }
 
     async setLock(locked) {
-        if (!window.inventoryManager.projectId) return true;
+        if (!window.inventoryManager || !window.inventoryManager.projectId) return true;
 
         try {
-            const { data: { user } } = await supabaseClient.auth.getUser();
+            const { data: { session } } = await supabaseClient.auth.getSession();
+            const user = session ? session.user : null;
             if (!user) return false;
 
             if (locked) {
+                console.log("Setting lock for project:", window.inventoryManager.projectId);
                 // Check if someone else has it
-                const { data: project } = await supabaseClient.from('projects')
+                const { data: project, error: sError } = await supabaseClient.from('projects')
                     .select('admin_lock_user, admin_lock_timestamp')
                     .eq('id', window.inventoryManager.projectId)
                     .single();
+
+                if (sError) {
+                    console.error("Error fetching project lock status:", sError);
+                }
 
                 if (project && project.admin_lock_user && project.admin_lock_user !== user.id) {
                     const lockTime = new Date(project.admin_lock_timestamp);
@@ -901,22 +923,29 @@ class AdminManager {
                 }
 
                 // Set lock
-                await supabaseClient.from('projects')
+                const { error: uError } = await supabaseClient.from('projects')
                     .update({
                         admin_lock_user: user.id,
                         admin_lock_timestamp: new Date().toISOString()
                     })
                     .eq('id', window.inventoryManager.projectId);
 
-                // Keep-alive heartbeat
+                if (uError) {
+                    console.error("Error updating project lock:", uError);
+                    // In production, if columns are missing, this fails. 
+                }
+
+                // Heartbeat
+                if (this.lockInterval) clearInterval(this.lockInterval);
                 this.lockInterval = setInterval(async () => {
-                    await supabaseClient.from('projects')
+                    const { error: hError } = await supabaseClient.from('projects')
                         .update({ admin_lock_timestamp: new Date().toISOString() })
                         .eq('id', window.inventoryManager.projectId);
-                }, 60000); // every minute
+                    if (hError) console.error("Lock heartbeat failed:", hError);
+                }, 60000);
 
             } else {
-                // Clear lock
+                console.log("Releasing lock for project:", window.inventoryManager.projectId);
                 if (this.lockInterval) clearInterval(this.lockInterval);
                 await supabaseClient.from('projects')
                     .update({ admin_lock_user: null, admin_lock_timestamp: null })
@@ -924,7 +953,7 @@ class AdminManager {
             }
             return true;
         } catch (e) {
-            console.error("Error setting lock:", e);
+            console.error("Critical error in setLock:", e);
             return false;
         }
     }
@@ -945,7 +974,7 @@ class AdminManager {
         if (tab === 'projects') this.refreshProjects();
         if (tab === 'node-types') this.refreshNodeTypes();
         if (tab === 'cable-types') this.refreshCableTypes();
-        if (tab === 'lists') this.refreshMasterLists();
+        if (tab === 'lists') this.switchListSubTab('master');
     }
 
     async refreshUsers() {
@@ -1480,10 +1509,25 @@ class AdminManager {
     }
 
     switchListSubTab(tab) {
+        document.getElementById('admin-list-master-container').classList.toggle('hidden', tab !== 'master');
+        document.getElementById('admin-list-infra-container').classList.toggle('hidden', tab !== 'infra');
+
+        document.getElementById('tab-list-master').className = tab === 'master' ? 'action-btn' : 'btn-secondary';
+        document.getElementById('tab-list-infra').className = tab === 'infra' ? 'action-btn' : 'btn-secondary';
+
+        if (tab === 'master') this.refreshMasterLists();
+        if (tab === 'infra') {
+            this.switchInfraTab('nodes');
+            this.refreshInfrastructureLists();
+        }
+    }
+
+    switchInfraTab(tab) {
         document.getElementById('admin-list-nodes-container').classList.toggle('hidden', tab !== 'nodes');
         document.getElementById('admin-list-conns-container').classList.toggle('hidden', tab !== 'conns');
-        document.getElementById('tab-list-nodes').className = tab === 'nodes' ? 'action-btn' : 'btn-secondary';
-        document.getElementById('tab-list-conns').className = tab === 'conns' ? 'action-btn' : 'btn-secondary';
+
+        document.getElementById('tab-infra-nodes').className = tab === 'nodes' ? 'action-btn' : 'btn-secondary';
+        document.getElementById('tab-infra-conns').className = tab === 'conns' ? 'action-btn' : 'btn-secondary';
     }
 
     renderAdminNodesList(nodes) {
