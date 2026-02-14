@@ -824,22 +824,92 @@ class AdminManager {
         }
     }
 
-    async openCreateUserPrompt() {
-        const email = prompt("Email del nuevo usuario:");
-        if (!email) return;
-        const password = prompt("Contraseña temporal:");
-        if (!password) return;
-        const role = prompt("Rol (super-admin, admin, tecnico, cliente):", "tecnico");
-        if (!role) return;
+    openCreateUserPrompt() {
+        // Create user modal dynamically
+        const modalId = 'modal-create-user';
+        if (document.getElementById(modalId)) document.body.removeChild(document.getElementById(modalId));
+
+        const modalHtml = `
+            <div id="${modalId}" class="modal-overlay" style="z-index: 3000;">
+                <div class="modal-content" style="max-width: 450px;">
+                    <h3 style="margin-bottom:20px; color:var(--primary-color);">Registrar Nuevo Usuario</h3>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Nombre Completo</label>
+                        <input type="text" id="cu-fullname" class="form-input" placeholder="Nombre completo del usuario">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Correo Electrónico</label>
+                        <input type="email" id="cu-email" class="form-input" placeholder="usuario@ejemplo.com">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Contraseña Temporal</label>
+                        <input type="password" id="cu-password" class="form-input" placeholder="Minimo 6 caracteres">
+                    </div>
+
+                    <div class="form-group">
+                        <label class="form-label">Rol del Usuario</label>
+                        <select id="cu-role" class="form-select">
+                            <option value="tecnico">Técnico (Solo lectura y reportes)</option>
+                            <option value="admin">Administrador (Gestión de inventario y proyectos)</option>
+                            <option value="super-admin">Super Admin (Control total del sistema)</option>
+                            <option value="cliente">Cliente (Vista restringida)</option>
+                        </select>
+                    </div>
+
+                    <div class="form-actions" style="margin-top:25px; gap:10px;">
+                        <button class="btn-secondary" style="flex:1;" onclick="document.body.removeChild(document.getElementById('${modalId}'))">Cancelar</button>
+                        <button class="action-btn" style="flex:1;" onclick="window.adminManager.saveNewUser()">Crear Usuario</button>
+                    </div>
+                </div>
+            </div>`;
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+    }
+
+    async saveNewUser() {
+        const email = document.getElementById('cu-email').value.trim();
+        const password = document.getElementById('cu-password').value;
+        const role = document.getElementById('cu-role').value;
+        const full_name = document.getElementById('cu-fullname').value.trim();
+
+        if (!email || !password || !full_name) {
+            return alert("Por favor complete todos los campos (Nombre, Email y Contraseña).");
+        }
+
+        if (password.length < 6) {
+            return alert("La contraseña debe tener al menos 6 caracteres.");
+        }
+
+        const modal = document.getElementById('modal-create-user');
+        const btn = modal.querySelector('.action-btn');
+        const originalText = btn.innerText;
+        btn.disabled = true;
+        btn.innerText = "Creando...";
+
         try {
             const resp = await fetch('/api/create_user', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ email, password, role, full_name: email.split('@')[0] })
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password, role, full_name })
             });
             const res = await resp.json();
-            if (res.success) { alert("Usuario creado."); this.refreshUsers(); }
-            else alert("Error: " + res.message);
-        } catch (e) { alert("Error: " + e.message); }
+
+            if (res.success) {
+                alert("Usuario creado exitosamente.");
+                document.body.removeChild(modal);
+                this.refreshUsers();
+            } else {
+                alert("Error al crear usuario: " + res.message);
+                btn.disabled = false;
+                btn.innerText = originalText;
+            }
+        } catch (e) {
+            alert("Error de conexión: " + e.message);
+            btn.disabled = false;
+            btn.innerText = originalText;
+        }
     }
 
     async resetPassword(userId) {
