@@ -857,10 +857,10 @@ class AdminManager {
     }
 
     async openAdminPanel() {
-        console.log("Attempting to open Admin Panel...");
+        console.log("Attempting to open Admin Panel. Current User:", window.userManager.user ? window.userManager.user.email : 'None');
         // Check if user is authenticated
         if (!window.userManager || !window.userManager.user) {
-            console.log("No user found in userManager");
+            console.log("No user found, showing login.");
             alert('Debes iniciar sesión para acceder al Panel Admin');
             if (window.userManager) {
                 window.userManager.showLogin();
@@ -868,7 +868,18 @@ class AdminManager {
             return;
         }
 
-        const perms = (window.userManager && window.userManager.profile) ? window.userManager.profile.permissions : {};
+        const profile = window.userManager.profile || {};
+        const perms = profile.permissions || {};
+        console.log("User Profile Role:", profile.role, "Permissions:", perms);
+
+        if (!perms.view_admin) {
+            console.warn("User does not have view_admin permission. Closing panel attempt.");
+            // If they don't have permission, they shouldn't even see the button, but just in case.
+            if (profile.role !== 'super-admin') { // Emergency check for super-admin
+                alert("No tienes permisos suficientes para acceder a esta área.");
+                return;
+            }
+        }
 
         // Hide administrative setup tabs if not allowed to edit settings
         const adminTabs = ['tab-node-types', 'tab-cable-types', 'tab-lists'];
