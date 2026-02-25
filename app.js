@@ -3065,6 +3065,7 @@ class UIManager {
             if (this.currentNodeId) this.startNodeRelocation(this.currentNodeId);
         });
 
+
         // Rack Actions
         this.rackView.btnClose.addEventListener('click', () => {
             this.switchView('details');
@@ -4792,6 +4793,9 @@ class UIManager {
         }
 
         // Splitter Button: Only for MUFLA, NAP or if it has an explicit "splitter" field
+
+
+        // Splitter Button: Only for MUFLA, NAP or if it has an explicit 'splitter' field
         const hasSplitterField = nodeTypeCfg && nodeTypeCfg.fields.some(f => f.type === 'splitter');
         if (node.type === 'MUFLA' || node.type === 'NAP' || hasSplitterField) {
             this.details.btnViewSplitters.classList.remove('hidden');
@@ -7099,6 +7103,649 @@ class UIManager {
     }
 }
 
+
+// ============================================================
+// PlanoManager
+// Full-screen image canvas mode for non-geographic projects
+// (floor plans, building layouts, etc.)
+// Uses Leaflet CRS.Simple so the image IS the coordinate space.
+// ============================================================
+class PlanoManager {
+    constructor() {
+        // Leaflet CRS.Simple instance (separate from geographic map)
+        this.planoMap = null;
+        this.imageOverlay = null;
+        this.imageSize = { w: 0, h: 0 };
+        this.imageBounds = null;   // [[0,0],[h,w]] pixel coords
+        this.imageDataUrl = null;
+        this.imageFileName = '';
+
+        // Calibration (línea de cota)
+        this.unit = 'm';
+        this.cotaRealValue = 1;
+        this.pixelsPerUnit = null;
+        this.isCalibrated = false;
+
+        // Cota drawing state
+        this.cotaPoints = [];
+        this.cotaMarkers = [];
+        this.cotaPolyline = null;
+
+        // Plano data (internals)
+        this.planoNodes = [];       // {id, name, latlng} (without marker to serialize)
+        this.planoConnections = []; // {id, name, points, distance, unit}
+        this.nodeIdCounter = 1;
+        this.connIdCounter = 1;
+
+        // Link to geographic parent node
+        this.parentNodeId = null;
+
+        // Interaction mode
+        this.mode = 'select'; // 'select' | 'add-node' | 'draw-cable' | 'draw-cota'
+        this.cableWaypoints = [];
+        this.cableTempPolyline = null;
+        this._cableWaypointDots = [];
+
+        this.isActive = false;
+        this._initialized = false;
+        this._pendingPlanoCoords = null;
+    }
+
+    init() {
+        if (this._initialized) return;
+        this._initialized = true;
+
+        // Wire upload button → map placement mode
+        const btnUpload = document.getElementById('btn-upload-map-image');
+        const fileInput = document.getElementById('input-map-image');
+        if (btnUpload && fileInput) {
+            btnUpload.addEventListener('click', () => {
+                this.startPlacingPlanoMode();
+            });
+            fileInput.addEventListener('change', (e) => {
+                const file = e.target.files[0];
+                if (file) {
+                    this.loadImageFile(file, this._pendingPlanoCoords);
+                    this._pendingPlanoCoords = null;
+                }
+                fileInput.value = '';
+            });
+        }
+
+        // Plano toolbar buttons
+        document.getElementById('btn-exit-plano')?.addEventListener('click', () => this.exitPlanoMode());
+        document.getElementById('btn-plano-add-node')?.addEventListener('click', () => this.setMode('add-node'));
+        document.getElementById('btn-plano-draw-cable')?.addEventListener('click', () => this.setMode('draw-cable'));
+        document.getElementById('btn-plano-finish-cable')?.addEventListener('click', () => this.finishCable());
+        document.getElementById('btn-plano-cancel-cable')?.addEventListener('click', () => { this._cancelCable(); this.setMode('select'); });
+        document.getElementById('btn-plano-clear')?.addEventListener('click', () => this._clearAll());
+        document.getElementById('btn-plano-upload-new')?.addEventListener('click', () => fileInput && fileInput.click());
+
+        console.log('📐 PlanoManager initialized');
+    }
+
+    // ── Image loading & Placement ───────────────────────────────
+    startPlacingPlanoMode() {
+        if (!window.mapManager || !window.mapManager.map) return;
+
+        // Visual feedback
+        const mapEl = window.mapManager.map.getContainer();
+        mapEl.style.cursor = 'crosshair';
+
+        // Disable existing clicking handlers if needed, though usually standard map is ok
+        this._mapPlanoClickHandler = (e) => {
+            mapEl.style.cursor = '';
+            window.mapManager.map.off('click', this._mapPlanoClickHandler);
+            this._pendingPlanoCoords = e.latlng;
+            // Now invoke the file picker
+            document.getElementById('input-map-image').click();
+        };
+
+        window.mapManager.map.on('click', this._mapPlanoClickHandler);
+        alert('Haz clic en el mapa geográfico en el punto exacto donde deseas ubicar este plano.');
+    }
+
+    loadImageFile(file, coords = null) {
+        this.imageFileName = file.name;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const dataUrl = e.target.result;
+            this.imageDataUrl = dataUrl;
+            const img = new Image();
+            img.onload = async () => {
+                this.imageSize = { w: img.naturalWidth, h: img.naturalHeight };
+
+                let parentId = null;
+                if (coords) {
+                    // Create a geographic node to anchor this plan
+                    const nodeName = 'Plano: ' + file.name.split('.')[0];
+                    const node = {
+                        id: 'plano-' + Date.now(),
+                        name: nodeName,
+                        type: 'RACK', // Use RACK so it draws a visible square icon
+                        lat: coords.lat,
+                        lng: coords.lng,
+                        customFields: {
+                            is_plano: true,
+                            plano_data_url: dataUrl,
+                            plano_elements: { nodes: [], cables: [] },
+                            cota: null
+                        }
+                    };
+                    await window.inventoryManager.addNode(node);
+                    window.mapManager.addMarker(node);
+                    parentId = node.id;
+                    console.log('📍 Geographic anchor node created for Plano:', parentId);
+                }
+
+                this.enterPlanoMode(dataUrl, parentId || this.parentNodeId);
+            };
+            img.src = dataUrl;
+        };
+        reader.readAsDataURL(file);
+    }
+
+    // ── View switching ──────────────────────────────────────────
+    enterPlanoMode(dataUrl, parentNodeId = null) {
+        this.isActive = true;
+        this.parentNodeId = parentNodeId;
+
+        // Hide the geographic map and other views
+        ['map', 'full-inventory-view', 'full-reports-view'].forEach(id => {
+            document.getElementById(id)?.classList.add('hidden');
+        });
+
+        // Show plano view
+        document.getElementById('plano-view')?.classList.remove('hidden');
+
+        // Update filename badge
+        const fnEl = document.getElementById('plano-filename');
+        if (fnEl) fnEl.textContent = '🖼️ ' + (this.imageFileName || 'Plano Interno');
+
+        // Also show "← Salir del Plano" shortcut in sidebar cota panel
+        const btnRemove = document.getElementById('btn-remove-map-image');
+        if (btnRemove) btnRemove.style.display = 'block';
+
+        // Load existing elements if any
+        if (this.parentNodeId && window.inventoryManager) {
+            const node = window.inventoryManager.getNode(this.parentNodeId);
+            if (node && node.customFields) {
+                if (node.customFields.cota) {
+                    this.isCalibrated = true;
+                    this.unit = node.customFields.cota.unit;
+                    this.pixelsPerUnit = node.customFields.cota.pixelsPerUnit;
+                    this.cotaRealValue = node.customFields.cota.realValue;
+                } else {
+                    this.isCalibrated = false;
+                    this.pixelsPerUnit = null;
+                }
+
+                if (node.customFields.plano_elements) {
+                    this.planoNodes = JSON.parse(JSON.stringify(node.customFields.plano_elements.nodes || []));
+                    this.planoConnections = JSON.parse(JSON.stringify(node.customFields.plano_elements.cables || []));
+                }
+            }
+        } else {
+            this.isCalibrated = false;
+            this.pixelsPerUnit = null;
+            this.planoNodes = [];
+            this.planoConnections = [];
+        }
+
+        // Build/re-build the Leaflet CRS.Simple map
+        this._initPlanoMap(dataUrl);
+
+        this._updateCalibrationUI();
+
+        // Auto-open cota panel only if not calibrated
+        if (!this.isCalibrated) {
+            this.openCotaPanel();
+        }
+
+        this.setMode('select');
+        console.log('📐 Entered plano mode. Parent Node:', this.parentNodeId);
+    }
+
+    exitPlanoMode() {
+        this.isActive = false;
+        this.setMode('select');
+
+        // Hide plano view
+        document.getElementById('plano-view')?.classList.add('hidden');
+
+        // Hide cota sidebar shortcut
+        const btnRemove = document.getElementById('btn-remove-map-image');
+        if (btnRemove) btnRemove.style.display = 'none';
+
+        // Show geographic map
+        document.getElementById('map')?.classList.remove('hidden');
+
+        // Tell Leaflet to recalculate size after it was hidden
+        if (window.mapManager?.map) {
+            setTimeout(() => window.mapManager.map.invalidateSize(), 100);
+        }
+
+        // Restore geographic node/cable lists
+        if (window.uiManager) {
+            window.uiManager.refreshNodeList?.();
+            window.uiManager.refreshCableList?.();
+        }
+
+        console.log('🗺️ Exited plano mode → geographic map restored');
+    }
+
+    _initPlanoMap(dataUrl) {
+        const h = this.imageSize.h;
+        const w = this.imageSize.w;
+        this.imageBounds = [[0, 0], [h, w]];
+
+        // Destroy previous instance if any
+        if (this.planoMap) {
+            this.planoMap.remove();
+            this.planoMap = null;
+        }
+
+        // New Leaflet map using pixel coordinate system
+        this.planoMap = L.map('plano-map', {
+            crs: L.CRS.Simple,
+            minZoom: -3,
+            maxZoom: 5,
+            zoomSnap: 0.25,
+            zoomControl: true,
+            attributionControl: false,
+            doubleClickZoom: false   // We use dblclick to finish cable
+        });
+
+        // Place the image
+        this.imageOverlay = L.imageOverlay(dataUrl, this.imageBounds, {
+            opacity: 1,
+            interactive: false
+        }).addTo(this.planoMap);
+
+        // Fit view to image
+        this.planoMap.fitBounds(this.imageBounds, { padding: [10, 10] });
+
+        // Interaction event listeners
+        this.planoMap.on('click', (e) => this._onPlanoClick(e));
+        this.planoMap.on('dblclick', (e) => {
+            if (this.mode === 'draw-cable') {
+                L.DomEvent.preventDefault(e);
+                this.finishCable();
+            }
+        });
+        this.planoMap.on('mousemove', (e) => this._onPlanoMouseMove(e));
+
+        // Clear current active drawings
+        this.cotaPoints = [];
+        this.cotaMarkers = [];
+        this.cotaPolyline = null;
+        this.cableWaypoints = [];
+        this._cableWaypointDots = [];
+
+        // Render previously saved elements into Leaflet
+        this._renderPlanoElementsToMap();
+        this._renderPlanoNodeList();
+        this._renderPlanoCableList();
+    }
+
+    _renderPlanoElementsToMap() {
+        // Render Nodes
+        this.planoNodes.forEach(node => {
+            node.marker = L.circleMarker([node.latlng.lat, node.latlng.lng], {
+                radius: 8, fillColor: '#800020', color: '#fff', weight: 2.5, fillOpacity: 0.95
+            }).addTo(this.planoMap);
+            node.marker.bindTooltip(node.name, { permanent: true, direction: 'top', offset: [0, -12], className: 'cable-dist-tooltip' });
+        });
+
+        // Render Cables
+        this.planoConnections.forEach(conn => {
+            conn.polyline = L.polyline(conn.points, { color: '#e67e22', weight: 3, opacity: 0.9 }).addTo(this.planoMap);
+            if (conn.distance != null) {
+                const midPt = conn.points[Math.floor(conn.points.length / 2)];
+                L.tooltip({ permanent: true, direction: 'center', className: 'cable-dist-tooltip' })
+                    .setLatLng(midPt)
+                    .setContent(`${conn.name}: ${conn.distance.toFixed(2)} ${conn.unit}`)
+                    .addTo(this.planoMap);
+            }
+        });
+    }
+
+    async _savePlanoStateToParentNode() {
+        if (!this.parentNodeId || !window.inventoryManager) return;
+        const node = window.inventoryManager.getNode(this.parentNodeId);
+        if (node) {
+            node.customFields = node.customFields || {};
+            // Filter out leaflet objects before saving to DB
+            const safeNodes = this.planoNodes.map(n => ({ id: n.id, name: n.name, latlng: n.latlng }));
+            const safeCables = this.planoConnections.map(c => ({ id: c.id, name: c.name, points: c.points, distance: c.distance, unit: c.unit }));
+
+            node.customFields.plano_elements = { nodes: safeNodes, cables: safeCables };
+            await window.inventoryManager.updateNode(node);
+            console.log('💾 Plano elements saved to parent node.');
+        }
+    }
+
+    // ── Interaction modes ───────────────────────────────────────
+    setMode(mode) {
+        // Clean up previous mode artifacts
+        if (this.mode === 'draw-cable' && mode !== 'draw-cable') this._cancelCable();
+        if (this.mode === 'draw-cota' && mode !== 'draw-cota') this.cancelCotaDrawing();
+
+        this.mode = mode;
+
+        // Update toolbar button highlights
+        ['btn-plano-add-node', 'btn-plano-draw-cable'].forEach(id => {
+            document.getElementById(id)?.classList.remove('active-mode');
+        });
+        if (mode === 'add-node') document.getElementById('btn-plano-add-node')?.classList.add('active-mode');
+        if (mode === 'draw-cable') document.getElementById('btn-plano-draw-cable')?.classList.add('active-mode');
+
+        // Status label
+        const labels = { select: 'Modo: Selección', 'add-node': 'Modo: Colocar Nodo — haz clic en el plano', 'draw-cable': 'Modo: Dibujar Cable — clic para puntos, doble clic para finalizar', 'draw-cota': 'Modo: Línea de Cota — selecciona 2 puntos' };
+        const statusEl = document.getElementById('plano-status');
+        if (statusEl) statusEl.textContent = labels[mode] || mode;
+
+        // Cursor
+        if (this.planoMap) {
+            this.planoMap.getContainer().style.cursor = (mode === 'select') ? 'grab' : 'crosshair';
+        }
+    }
+
+    _onPlanoClick(e) {
+        if (this.mode === 'add-node') this._addNode(e.latlng);
+        if (this.mode === 'draw-cable') this._addCableWaypoint(e.latlng);
+        if (this.mode === 'draw-cota') this._addCotaPoint(e.latlng);
+    }
+
+    _onPlanoMouseMove(e) {
+        if (this.mode === 'draw-cable' && this.cableWaypoints.length > 0) {
+            const pts = [...this.cableWaypoints, e.latlng];
+            if (this.cableTempPolyline) this.planoMap.removeLayer(this.cableTempPolyline);
+            this.cableTempPolyline = L.polyline(pts, {
+                color: '#2ecc71', weight: 2, dashArray: '5, 8', opacity: 0.7
+            }).addTo(this.planoMap);
+        }
+    }
+
+    // ── Node placement ──────────────────────────────────────────
+    _addNode(latlng) {
+        const name = prompt('Nombre del nodo (equipo, caja, punto):', 'Nodo ' + this.nodeIdCounter);
+        if (name === null) return;
+
+        const marker = L.circleMarker([latlng.lat, latlng.lng], {
+            radius: 8, fillColor: '#800020', color: '#fff', weight: 2.5, fillOpacity: 0.95
+        }).addTo(this.planoMap);
+
+        marker.bindTooltip(name || ('Nodo ' + this.nodeIdCounter), {
+            permanent: true, direction: 'top', offset: [0, -12],
+            className: 'cable-dist-tooltip'
+        });
+
+        const node = { id: 'pn-' + (this.nodeIdCounter++) + '-' + Date.now(), name: name || ('Nodo ' + this.nodeIdCounter), latlng, marker };
+        this.planoNodes.push(node);
+        this._renderPlanoNodeList();
+        this._savePlanoStateToParentNode();
+    }
+
+    // ── Cable drawing ───────────────────────────────────────────
+    _addCableWaypoint(latlng) {
+        this.cableWaypoints.push(latlng);
+
+        const dot = L.circleMarker([latlng.lat, latlng.lng], {
+            radius: 4, fillColor: '#e67e22', color: '#fff', weight: 1.5, fillOpacity: 1
+        }).addTo(this.planoMap);
+        this._cableWaypointDots.push(dot);
+
+        // Show finish & cancel buttons when ≥ 2 points
+        const hasEnough = this.cableWaypoints.length >= 2;
+        document.getElementById('btn-plano-finish-cable').style.display = hasEnough ? 'inline-flex' : 'none';
+        document.getElementById('btn-plano-cancel-cable').style.display = 'inline-flex';
+    }
+
+    finishCable() {
+        if (this.cableWaypoints.length < 2) { alert('Dibuja al menos 2 puntos.'); return; }
+
+        // Measure distance if calibrated
+        let dist = null;
+        let distText = '';
+        if (this.isCalibrated) {
+            dist = this._measurePoints(this.cableWaypoints);
+            distText = `${dist.toFixed(2)} ${this.unit}`;
+        }
+
+        const defaultName = 'Cable ' + this.connIdCounter;
+        const promptMsg = `Nombre / ID del cable:${distText ? '\nDistancia medida: ' + distText : '\n(Calibra la línea de cota para medir distancias)'}`;
+        const name = prompt(promptMsg, defaultName);
+        if (name === null) { this._cancelCable(); return; }
+
+        // Draw permanent cable
+        const polyline = L.polyline([...this.cableWaypoints], {
+            color: '#e67e22', weight: 3, opacity: 0.9
+        }).addTo(this.planoMap);
+
+        // Label at midpoint
+        if (distText) {
+            const midPt = this.cableWaypoints[Math.floor(this.cableWaypoints.length / 2)];
+            L.tooltip({ permanent: true, direction: 'center', className: 'cable-dist-tooltip' })
+                .setLatLng(midPt)
+                .setContent(`${name || defaultName}: ${distText}`)
+                .addTo(this.planoMap);
+        }
+
+        this.planoConnections.push({
+            id: 'pc-' + (this.connIdCounter++) + '-' + Date.now(),
+            name: name || defaultName,
+            points: [...this.cableWaypoints],
+            distance: dist,
+            unit: this.unit,
+            polyline
+        });
+
+        this._cancelCable();
+        this.setMode('select');
+        this._renderPlanoCableList();
+        this._savePlanoStateToParentNode();
+        console.log('🧵 Plano cable saved:', name, distText);
+    }
+
+    _cancelCable() {
+        if (this.cableTempPolyline) { this.planoMap?.removeLayer(this.cableTempPolyline); this.cableTempPolyline = null; }
+        this._cableWaypointDots.forEach(d => this.planoMap?.removeLayer(d));
+        this._cableWaypointDots = [];
+        this.cableWaypoints = [];
+        document.getElementById('btn-plano-finish-cable').style.display = 'none';
+        document.getElementById('btn-plano-cancel-cable').style.display = 'none';
+    }
+
+    _clearAll() {
+        if (!confirm('¿Limpiar todos los nodos y cables del plano?')) return;
+        this.planoNodes.forEach(n => this.planoMap?.removeLayer(n.marker));
+        this.planoConnections.forEach(c => this.planoMap?.removeLayer(c.polyline));
+        this._cancelCable();
+        this._clearCotaDrawing();
+        this.planoNodes = [];
+        this.planoConnections = [];
+        this.isCalibrated = false;
+        this.pixelsPerUnit = null;
+        this._updateCalibrationUI();
+        this._renderPlanoCableList();
+        this._savePlanoStateToParentNode();
+        const resultDiv = document.getElementById('cota-result');
+        if (resultDiv) resultDiv.classList.add('hidden');
+    }
+
+    // ── Calibration math ────────────────────────────────────────
+    _measurePoints(latlngs) {
+        if (!this.isCalibrated || latlngs.length < 2) return null;
+        let totalPx = 0;
+        for (let i = 0; i < latlngs.length - 1; i++) {
+            const a = latlngs[i], b = latlngs[i + 1];
+            // In CRS.Simple latlng.lat = row (y), latlng.lng = col (x)
+            totalPx += Math.sqrt(Math.pow(b.lng - a.lng, 2) + Math.pow(b.lat - a.lat, 2));
+        }
+        return totalPx / this.pixelsPerUnit;
+    }
+
+    // ── Línea de Cota ───────────────────────────────────────────
+    toggleCotaPanel() {
+        const panel = document.getElementById('cota-panel');
+        const icon = document.getElementById('cota-toggle-icon');
+        if (!panel) return;
+        const open = panel.classList.contains('open');
+        panel.classList.toggle('open', !open);
+        icon?.classList.toggle('open', !open);
+    }
+
+    openCotaPanel() {
+        document.getElementById('cota-panel')?.classList.add('open');
+        document.getElementById('cota-toggle-icon')?.classList.add('open');
+    }
+
+    setUnit(unit, btnEl) {
+        this.unit = unit;
+        document.querySelectorAll('.cota-unit-btn').forEach(b => b.classList.remove('active'));
+        btnEl?.classList.add('active');
+        const lbl = document.getElementById('cota-unit-label');
+        if (lbl) lbl.textContent = unit;
+        this._updateCalibrationUI();
+    }
+
+    startCotaDrawing() {
+        if (!this.isActive || !this.planoMap) {
+            alert('Por favor, carga primero una imagen en modo Plano.');
+            return;
+        }
+        const val = parseFloat(document.getElementById('input-cota-value')?.value);
+        if (!val || val <= 0) { alert('Ingresa un valor real válido.'); return; }
+        this.cotaRealValue = val;
+
+        this._clearCotaDrawing();
+        this.setMode('draw-cota');
+        document.getElementById('cota-drawing-banner')?.classList.remove('hidden');
+    }
+
+    cancelCotaDrawing() {
+        this._clearCotaDrawing();
+        document.getElementById('cota-drawing-banner')?.classList.add('hidden');
+        if (this.mode === 'draw-cota') this.setMode('select');
+    }
+
+    _addCotaPoint(latlng) {
+        this.cotaPoints.push(latlng);
+
+        const dot = L.circleMarker([latlng.lat, latlng.lng], {
+            radius: 6, fillColor: '#e67e22', color: '#fff', weight: 2, fillOpacity: 1
+        }).addTo(this.planoMap);
+        this.cotaMarkers.push(dot);
+
+        if (this.cotaPoints.length > 1) {
+            if (this.cotaPolyline) this.planoMap.removeLayer(this.cotaPolyline);
+            this.cotaPolyline = L.polyline(this.cotaPoints, {
+                color: '#e67e22', weight: 2.5, dashArray: '6, 4'
+            }).addTo(this.planoMap);
+        }
+
+        if (this.cotaPoints.length === 2) this._finalizeCotaCalibration();
+    }
+
+    _finalizeCotaCalibration() {
+        const p1 = this.cotaPoints[0], p2 = this.cotaPoints[1];
+        // CRS.Simple: lng = x, lat = y
+        const dx = p2.lng - p1.lng, dy = p2.lat - p1.lat;
+        const pixelDist = Math.sqrt(dx * dx + dy * dy);
+
+        if (pixelDist < 5) {
+            alert('Línea muy corta. Traza una línea más larga sobre el plano.');
+            this._clearCotaDrawing();
+            this.cancelCotaDrawing();
+            return;
+        }
+
+        this.pixelsPerUnit = pixelDist / this.cotaRealValue;
+        this.isCalibrated = true;
+
+        // Save cota calibration to parent node
+        if (this.parentNodeId && window.inventoryManager) {
+            const node = window.inventoryManager.getNode(this.parentNodeId);
+            if (node) {
+                node.customFields = node.customFields || {};
+                node.customFields.cota = {
+                    unit: this.unit,
+                    realValue: this.cotaRealValue,
+                    pixelsPerUnit: this.pixelsPerUnit
+                };
+                window.inventoryManager.updateNode(node);
+            }
+        }
+
+        document.getElementById('cota-drawing-banner')?.classList.add('hidden');
+
+        const resultDiv = document.getElementById('cota-result');
+        const resultText = document.getElementById('cota-result-text');
+        if (resultDiv && resultText) {
+            resultText.textContent = `Línea: ${pixelDist.toFixed(1)} px ≈ ${this.cotaRealValue} ${this.unit}`;
+            resultDiv.classList.remove('hidden');
+        }
+
+        this._updateCalibrationUI();
+        this.setMode('select');
+        console.log(`✅ Calibrado: ${pixelDist.toFixed(1)} px = ${this.cotaRealValue} ${this.unit}  →  ${this.pixelsPerUnit.toFixed(3)} px/${this.unit}`);
+    }
+
+    _clearCotaDrawing() {
+        this.cotaMarkers.forEach(m => this.planoMap?.removeLayer(m));
+        this.cotaMarkers = [];
+        if (this.cotaPolyline) { this.planoMap?.removeLayer(this.cotaPolyline); this.cotaPolyline = null; }
+        this.cotaPoints = [];
+    }
+
+    _updateCalibrationUI() {
+        const badge = document.getElementById('cota-calibrated-badge');
+        const scaleEl = document.getElementById('cota-scale-display');
+        if (this.isCalibrated && badge && scaleEl) {
+            scaleEl.textContent = `1 px ≈ ${(1 / this.pixelsPerUnit).toFixed(4)} ${this.unit}`;
+            badge.classList.remove('hidden');
+        } else {
+            badge?.classList.add('hidden');
+        }
+    }
+
+    // ── Sidebar list rendering ──────────────────────────────────
+    _renderPlanoNodeList() {
+        const el = document.getElementById('node-list-container');
+        if (!el) return;
+        if (this.planoNodes.length === 0) {
+            el.innerHTML = '<p class="empty-state">No hay nodos en el plano.</p>'; return;
+        }
+        el.innerHTML = '';
+        this.planoNodes.forEach(node => {
+            const item = document.createElement('div');
+            item.className = 'nav-btn';
+            item.style.fontSize = '13px';
+            item.innerHTML = `<span style="color:#800020;">📍</span> ${node.name}`;
+            item.addEventListener('click', () => this.planoMap?.panTo(node.latlng));
+            el.appendChild(item);
+        });
+    }
+
+    _renderPlanoCableList() {
+        const el = document.getElementById('cable-list-container');
+        if (!el) return;
+        if (this.planoConnections.length === 0) {
+            el.innerHTML = '<p class="empty-state">No hay cables en el plano.</p>'; return;
+        }
+        el.innerHTML = '';
+        this.planoConnections.forEach(conn => {
+            const item = document.createElement('div');
+            item.className = 'nav-btn';
+            item.style.fontSize = '13px';
+            const distText = conn.distance != null ? `${conn.distance.toFixed(2)} ${conn.unit}` : '—';
+            item.innerHTML = `<span style="color:#e67e22;">🧵</span> ${conn.name} <small style="margin-left:auto;opacity:0.7">${distText}</small>`;
+            el.appendChild(item);
+        });
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     const mapManager = new MapManager('map');
     mapManager.init();
@@ -7118,6 +7765,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const adminManager = new AdminManager();
     window.adminManager = adminManager;
     adminManager.init();
+
+    // Initialize Plano Manager (image canvas mode for floor plans)
+    const planoManager = new PlanoManager();
+    planoManager.init();
+    window.planoManager = planoManager;
 
     // Expose for debugging/testing
     window.mapManager = mapManager;

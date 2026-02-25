@@ -56,6 +56,63 @@
                         <button class="action-btn" id="btn-tender-cable" style="margin-top: 8px; background: #2ecc71;">
                             🧵 Tender Cableado
                         </button>
+
+                        <!-- Upload Image / Vector Map -->
+                        <button class="action-btn" id="btn-upload-map-image"
+                            style="margin-top: 8px; background: #2980b9;">
+                            📤 Subir Imagen / Mapa
+                        </button>
+                        <!-- Hidden file input -->
+                        <input type="file" id="input-map-image" accept="image/*,.svg" style="display:none;">
+
+                        <!-- Línea de Cota Collapsible Section -->
+                        <div id="section-linea-cota" class="cota-section" style="margin-top: 10px;">
+                            <button class="cota-toggle-btn" id="btn-toggle-cota"
+                                onclick="window.planoManager && window.planoManager.toggleCotaPanel()">
+                                <span>📏 Línea de Cota</span>
+                                <span id="cota-toggle-icon">▶</span>
+                            </button>
+                            <div id="cota-panel" class="cota-panel">
+                                <div class="cota-panel-inner">
+                                    <p class="cota-hint">Selecciona la unidad de medida y traza una línea sobre la
+                                        imagen para calibrar distancias.</p>
+                                    <div class="form-group" style="margin-bottom:8px;">
+                                        <label class="form-label">Unidad de medida</label>
+                                        <div class="cota-unit-selector" id="cota-unit-selector">
+                                            <button class="cota-unit-btn active" data-unit="m"
+                                                onclick="window.planoManager && window.planoManager.setUnit('m', this)">m</button>
+                                            <button class="cota-unit-btn" data-unit="cm"
+                                                onclick="window.planoManager && window.planoManager.setUnit('cm', this)">cm</button>
+                                            <button class="cota-unit-btn" data-unit="km"
+                                                onclick="window.planoManager && window.planoManager.setUnit('km', this)">km</button>
+                                        </div>
+                                    </div>
+                                    <div class="form-group" style="margin-bottom:8px;">
+                                        <label class="form-label">Valor real de la línea (<span
+                                                id="cota-unit-label">m</span>)</label>
+                                        <input type="number" class="form-input" id="input-cota-value" value="1"
+                                            min="0.001" step="any" placeholder="Ej: 100">
+                                    </div>
+                                    <button class="action-btn" id="btn-draw-cota"
+                                        style="background:#e67e22; font-size:12px; padding:8px;"
+                                        onclick="window.planoManager && window.planoManager.startCotaDrawing()">
+                                        ✏️ Trazar Línea de Cota
+                                    </button>
+                                    <div id="cota-result" class="cota-result hidden">
+                                        <span id="cota-result-text"></span>
+                                    </div>
+                                    <div id="cota-calibrated-badge" class="cota-calibrated hidden">
+                                        ✅ Calibrado: <span id="cota-scale-display"></span>
+                                    </div>
+                                    <button class="btn-secondary" id="btn-remove-map-image"
+                                        style="margin-top:8px; width:100%; font-size:12px; display:none;"
+                                        onclick="window.planoManager && window.planoManager.exitPlanoMode()">
+                                        ← Salir del Plano
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
                         <div class="sidebar-section-title"
                             style="margin-top: 15px; margin-bottom: 5px; font-weight: bold; font-size: 13px; color: #666; border-bottom: 1px solid #eee; padding-bottom: 3px;">
                             📦 EQUIPOS Y TERMINALES
@@ -228,6 +285,8 @@
                             <button class="action-btn hidden" id="btn-manage-node-ports"
                                 style="background-color: #4a0012; width: 100%;">🔌 GESTIONAR PUERTOS</button>
                         </div>
+
+
                         <div class="details-actions"
                             style="margin-top: 15px; border-top: 1px solid #eee; padding-top: 15px;">
                             <button class="action-btn" id="btn-start-relocation" style="flex:1">📍 Mover</button>
@@ -392,6 +451,27 @@
             </header>
 
             <div id="map" class="map-container"></div>
+
+            <!-- Plano View (Image Canvas - Non-Geographic Mode) -->
+            <div id="plano-view" class="plano-view hidden">
+                <div class="plano-toolbar" id="plano-toolbar">
+                    <button class="plano-exit-btn" id="btn-exit-plano">← Volver al Mapa</button>
+                    <span id="plano-filename">🖼️ Sin imagen cargada</span>
+                    <div class="plano-toolbar-actions">
+                        <button id="btn-plano-add-node" class="plano-tool-btn">📍 Nodo</button>
+                        <button id="btn-plano-draw-cable" class="plano-tool-btn">🧵 Cable</button>
+                        <button id="btn-plano-finish-cable" class="plano-tool-btn plano-tool-finish"
+                            style="display:none">✅ Finalizar Cable</button>
+                        <button id="btn-plano-cancel-cable" class="plano-tool-btn plano-tool-cancel"
+                            style="display:none">❌ Cancelar</button>
+                        <button id="btn-plano-clear" class="plano-tool-btn" style="background:rgba(220,53,69,0.5)">🗑️
+                            Limpiar</button>
+                        <button id="btn-plano-upload-new" class="plano-tool-btn">📤 Cambiar Imagen</button>
+                    </div>
+                    <div id="plano-status" class="plano-status">Modo: Selección</div>
+                </div>
+                <div id="plano-map" class="plano-map-canvas"></div>
+            </div>
 
             <!-- Full Reports Management View -->
             <div id="full-reports-view" class="hidden"
@@ -950,7 +1030,45 @@
 
     </div>
 
-    <!-- Leaflet JS -->
+    <!-- Image Calibration Modal -->
+    <div id="modal-image-calibration" class="modal-overlay hidden" style="z-index:3000;">
+        <div class="modal-content" style="max-width:480px;">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+                <span style="font-size:32px;">📐</span>
+                <div>
+                    <h3 style="margin:0;">Calibrar Escala del Mapa</h3>
+                    <p style="margin:4px 0 0 0; font-size:13px; color:#666;">Traza una línea de cota para medir
+                        distancias reales sobre la imagen.</p>
+                </div>
+            </div>
+            <div
+                style="background:#f8f2ff; border-left:4px solid #800020; padding:12px; border-radius:6px; margin-bottom:16px; font-size:13px;">
+                <strong>¿Cómo funciona?</strong>
+                <ol style="margin:8px 0 0 16px; line-height:1.7;">
+                    <li>La imagen se ha cargado sobre el mapa.</li>
+                    <li>Selecciona <strong>Línea de Cota</strong> en el panel lateral.</li>
+                    <li>Elige la unidad (cm, m, km) e ingresa el valor real.</li>
+                    <li>Haz clic en <strong>Trazar Línea</strong>, luego dibuja dos puntos sobre la imagen.</li>
+                    <li>El sistema calculará la escala para medir cables.</li>
+                </ol>
+            </div>
+            <div style="display:flex; gap:10px;">
+                <button class="btn-secondary" style="flex:1;"
+                    onclick="document.getElementById('modal-image-calibration').classList.add('hidden');">Ahora
+                    no</button>
+                <button class="action-btn" style="flex:2;"
+                    onclick="document.getElementById('modal-image-calibration').classList.add('hidden'); if(window.planoManager) window.planoManager.openCotaPanel();">📏
+                    Ir a Línea de Cota</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cota Drawing Overlay Banner -->
+    <div id="cota-drawing-banner" class="cota-drawing-banner hidden">
+        <span>✏️ Modo Línea de Cota: haz clic en dos puntos sobre la imagen para calibrar</span>
+        <button onclick="window.planoManager && window.planoManager.cancelCotaDrawing()"
+            style="margin-left:16px; background:#dc3545; color:white; border:none; border-radius:4px; padding:4px 10px; cursor:pointer;">Cancelar</button>
+    </div>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
 

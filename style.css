@@ -757,3 +757,326 @@ body {
     font-weight: 600;
     color: var(--primary-color);
 }
+
+/* =========================================
+   Plano View (Image Canvas Mode)
+   ========================================= */
+
+.plano-view {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    background: #1a1a2e;
+}
+
+.plano-view.hidden {
+    display: none !important;
+}
+
+.plano-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 16px;
+    background: linear-gradient(90deg, #1a252f 0%, #2c3e50 100%);
+    color: white;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    border-bottom: 2px solid #e67e22;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+    z-index: 100;
+    position: relative;
+}
+
+.plano-exit-btn {
+    padding: 6px 14px;
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    transition: all 0.2s;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.plano-exit-btn:hover {
+    background: rgba(255, 255, 255, 0.25);
+    border-color: white;
+}
+
+#plano-filename {
+    color: #e8e8e8;
+    font-size: 13px;
+    font-weight: 500;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+.plano-toolbar-actions {
+    display: flex;
+    gap: 5px;
+    flex-wrap: wrap;
+}
+
+.plano-tool-btn {
+    padding: 6px 12px;
+    border: none;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.12);
+    color: white;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+    white-space: nowrap;
+}
+
+.plano-tool-btn:hover {
+    background: rgba(255, 255, 255, 0.28);
+    transform: translateY(-1px);
+}
+
+.plano-tool-btn.active-mode {
+    background: #e67e22;
+    box-shadow: 0 2px 8px rgba(230, 126, 34, 0.5);
+}
+
+.plano-tool-finish {
+    background: rgba(39, 174, 96, 0.6) !important;
+}
+
+.plano-tool-finish:hover {
+    background: rgba(39, 174, 96, 0.9) !important;
+}
+
+.plano-tool-cancel {
+    background: rgba(231, 76, 60, 0.6) !important;
+}
+
+.plano-tool-cancel:hover {
+    background: rgba(231, 76, 60, 0.9) !important;
+}
+
+.plano-status {
+    font-size: 11px;
+    color: #e67e22;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    padding: 3px 8px;
+    background: rgba(230, 126, 34, 0.1);
+    border-radius: 4px;
+    border: 1px solid rgba(230, 126, 34, 0.3);
+    white-space: nowrap;
+}
+
+.plano-map-canvas {
+    flex: 1;
+    width: 100%;
+    /* Checkerboard bg so transparent images look good */
+    background-color: #1e1e2e;
+    background-image:
+        linear-gradient(45deg, #2a2a3e 25%, transparent 25%),
+        linear-gradient(-45deg, #2a2a3e 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #2a2a3e 75%),
+        linear-gradient(-45deg, transparent 75%, #2a2a3e 75%);
+    background-size: 20px 20px;
+    background-position: 0 0, 0 10px, 10px -10px, -10px 0px;
+}
+
+/* Cable distance tooltip in plano */
+.cable-dist-tooltip {
+    background: rgba(44, 62, 80, 0.9) !important;
+    border: 1px solid #e67e22 !important;
+    color: white !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    padding: 3px 7px !important;
+    border-radius: 4px !important;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* =========================================
+   Image Overlay & Línea de Cota Styles
+   ========================================= */
+
+/* Collapsible Cota Section */
+.cota-section {
+    border: 1px solid #e0e6ef;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #ffffff;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.06);
+}
+
+.cota-toggle-btn {
+    width: 100%;
+    padding: 10px 14px;
+    background: linear-gradient(90deg, #2c3e50 0%, #3d566e 100%);
+    color: #ffffff;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    transition: background 0.2s;
+}
+
+.cota-toggle-btn:hover {
+    background: linear-gradient(90deg, #1a252f 0%, #2c3e50 100%);
+}
+
+#cota-toggle-icon {
+    transition: transform 0.25s ease;
+    font-size: 10px;
+}
+
+#cota-toggle-icon.open {
+    transform: rotate(90deg);
+}
+
+.cota-panel {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.35s ease, padding 0.35s ease;
+}
+
+.cota-panel.open {
+    max-height: 400px;
+}
+
+.cota-panel-inner {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.cota-hint {
+    font-size: 11px;
+    color: #777;
+    line-height: 1.5;
+    margin-bottom: 6px;
+    padding: 6px 8px;
+    background: #f5f8fc;
+    border-radius: 4px;
+    border-left: 3px solid #2980b9;
+}
+
+/* Unit selector buttons */
+.cota-unit-selector {
+    display: flex;
+    gap: 6px;
+    margin-top: 4px;
+}
+
+.cota-unit-btn {
+    flex: 1;
+    padding: 7px 0;
+    border: 2px solid #ddd;
+    background: #f7f7f7;
+    color: #555;
+    border-radius: 6px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.cota-unit-btn:hover {
+    border-color: #e67e22;
+    color: #e67e22;
+    background: #fff8f0;
+}
+
+.cota-unit-btn.active {
+    border-color: #e67e22;
+    background: #e67e22;
+    color: white;
+    box-shadow: 0 2px 6px rgba(230, 126, 34, 0.3);
+}
+
+/* Cota result display */
+.cota-result {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: #eaf4fb;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #1a6085;
+    font-weight: 500;
+    border: 1px solid #aed6f1;
+}
+
+/* Calibration success badge */
+.cota-calibrated {
+    margin-top: 6px;
+    padding: 8px 10px;
+    background: #eafaf1;
+    border-radius: 6px;
+    font-size: 12px;
+    color: #1e8449;
+    font-weight: 600;
+    border: 1px solid #a9dfbf;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+/* Drawing mode banner */
+.cota-drawing-banner {
+    position: fixed;
+    top: 70px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(44, 62, 80, 0.95);
+    color: white;
+    padding: 10px 22px;
+    border-radius: 24px;
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 5000;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    animation: slideDownBanner 0.3s ease;
+    pointer-events: all;
+}
+
+@keyframes slideDownBanner {
+    from {
+        opacity: 0;
+        transform: translateX(-50%) translateY(-20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+}
+
+/* Image overlay cursor modes */
+.leaflet-container.cota-drawing-mode {
+    cursor: crosshair !important;
+}
+
+/* Cota measurement line marker */
+.cota-marker-dot {
+    width: 12px;
+    height: 12px;
+    background: #e67e22;
+    border: 2px solid white;
+    border-radius: 50%;
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
+}
