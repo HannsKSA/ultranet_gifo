@@ -506,7 +506,12 @@
                 </div>
             </header>
 
-            <div id="map" class="map-container"></div>
+            <div id="map" class="map-container">
+                <!-- Non-blocking instruction banner -->
+                <div id="map-status-msg"
+                    style="display:none; position:absolute; top:10px; left:50%; transform:translateX(-50%); background:rgba(0,0,0,0.75); color:white; padding:10px 20px; border-radius:20px; font-size:14px; z-index:1000; pointer-events:none; font-weight:500;">
+                </div>
+            </div>
 
             <!-- Plano View (Image Canvas - Non-Geographic Mode) -->
             <div id="plano-view" class="plano-view hidden">

@@ -3312,7 +3312,11 @@ class UIManager {
             }
         }
 
-        this.form.preview.innerHTML = "<small style='color:#e74c3c; font-weight:bold;'>📍 HAZ CLIC EN EL MAPA PARA UBICAR</small>";
+        const inPlano = window.planoManager && window.planoManager.isActive;
+        const msg = inPlano
+            ? "📍 HAZ CLIC EN EL PLANO PARA UBICAR"
+            : "📍 HAZ CLIC EN EL MAPA PARA UBICAR";
+        this.form.preview.innerHTML = `<small style='color:#e74c3c; font-weight:bold;'>${msg}</small>`;
         this.form.preview.classList.remove('success');
         this.form.preview.style.borderColor = "#ff4d4f";
         this.form.preview.style.background = "#fff5f5";
@@ -6518,15 +6522,20 @@ class UIManager {
     refreshNodeList() {
         // NODES SECTION
         const nodeContainer = document.getElementById('node-list-container');
+        if (!nodeContainer) return;
         let nodes = this.inventoryManager.getNodes();
 
-        // Context filtering
-        if (window.planoManager && window.planoManager.isActive) {
+        // Context filtering: in plano mode show only plano nodes
+        const inPlano = window.planoManager && window.planoManager.isActive;
+        if (inPlano) {
             nodes = nodes.filter(n => n.customFields?.plano_id === window.planoManager.fullPlanoId);
+        } else {
+            // In map mode, exclude plano-site marker nodes from the sidebar list
+            nodes = nodes.filter(n => !n.customFields?.is_plano);
         }
 
         if (nodes.length === 0) {
-            nodeContainer.innerHTML = '<p class="empty-state">No hay nodos registrados.</p>';
+            nodeContainer.innerHTML = '<p class="empty-state">' + (inPlano ? 'No hay nodos en este plano.' : 'No hay nodos registrados.') + '</p>';
         } else {
             nodeContainer.innerHTML = '';
             nodes.forEach(node => {
@@ -7332,11 +7341,17 @@ class PlanoManager {
         }
         if (!window.mapManager || !window.mapManager.map) return;
 
+        // Close dropdown if open
+        document.getElementById('planos-dropdown')?.classList.add('hidden');
+
         // Visual feedback
         const mapEl = window.mapManager.map.getContainer();
         mapEl.style.cursor = 'crosshair';
 
-        // Disable existing clicking handlers
+        // Show the geographic map if it's hidden (e.g. plano mode was active)
+        document.getElementById('map')?.classList.remove('hidden');
+        document.getElementById('plano-view')?.classList.add('hidden');
+
         this._mapPlanoClickHandler = (e) => {
             mapEl.style.cursor = '';
             window.mapManager.map.off('click', this._mapPlanoClickHandler);
@@ -7363,7 +7378,15 @@ class PlanoManager {
         };
 
         window.mapManager.map.on('click', this._mapPlanoClickHandler);
-        alert('Haz clic en el mapa geográfico en el punto exacto donde deseas ubicar este plano.');
+        // Use a non-blocking notification instead of alert
+        const statusEl = document.getElementById('map-status-msg');
+        if (statusEl) {
+            statusEl.textContent = '📍 Haz clic en el mapa para ubicar el plano';
+            statusEl.style.display = 'block';
+            setTimeout(() => { statusEl.style.display = 'none'; }, 8000);
+        } else {
+            alert('Haz clic en el mapa geográfico en el punto exacto donde deseas ubicar este plano.');
+        }
     }
 
     loadImageFile(file, coords = null) {
@@ -7378,7 +7401,14 @@ class PlanoManager {
                 let parentId = this._pendingParentNodeId;
                 let layerId = 'layer-' + Date.now();
                 let layerName = prompt('Nombre de la Capa o Piso:', parentId ? 'Nuevo Piso' : 'Planta Baja');
+                if (layerName === null) return; // User cancelled
                 if (!layerName) layerName = file.name.split('.')[0];
+
+                // If no coords (map click was missed), use current map center
+                if (!coords && window.mapManager?.map) {
+                    coords = window.mapManager.map.getCenter();
+                    console.log('ℹ️ No map coords provided, using map center:', coords);
+                }
 
                 if (!parentId && coords) {
                     // Create a new geographic site node
@@ -7402,8 +7432,14 @@ class PlanoManager {
                         cota: null,
                         imageSize: this.imageSize
                     });
-                    await window.inventoryManager.addNode(siteNode);
+                    const added = await window.inventoryManager.addNode(siteNode);
+                    if (!added) {
+                        console.error('Failed to save plano site node');
+                        return;
+                    }
                     window.mapManager.addMarker(siteNode);
+                    // Refresh list so the new site appears
+                    if (window.uiManager) window.uiManager.refreshNodeList();
                 } else if (parentId) {
                     // Add layer to existing site
                     const site = window.inventoryManager.getNode(parentId);
@@ -7429,10 +7465,20 @@ class PlanoManager {
                         });
                         await window.inventoryManager.updateNode(site);
                     }
+                } else {
+                    alert('No se pudo determinar la ubicación del plano. Intenta de nuevo haciendo clic en el mapa.');
+                    return;
                 }
 
                 this._pendingParentNodeId = null;
+                this._pendingPlanoCoords = null;
                 this.enterPlanoMode(dataUrl, parentId, layerId);
+
+                // Refresh the plano list in the dropdown
+                this.refreshPlanoList();
+            };
+            img.onerror = () => {
+                alert('No se pudo leer la imagen. Asegúrate de que el archivo es una imagen válida.');
             };
             img.src = dataUrl;
         };
