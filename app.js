@@ -83,6 +83,8 @@ class MapManager {
             this.map.removeLayer(this.markers[node.id]);
         }
 
+        if (node.customFields && node.customFields.plano_id) return;
+
         // Custom icon based on type
         let iconColor = this.getColorForType(node.type);
 
@@ -198,6 +200,8 @@ class MapManager {
 
     // Updated to support waypoints
     addConnection(connection) {
+        if (connection.fiberDetails && connection.fiberDetails[0] && connection.fiberDetails[0].plano_id) return null; // Skip non-geographic cables
+
         if (this.connections[connection.id]) {
             this.map.removeLayer(this.connections[connection.id]);
         }
@@ -2138,7 +2142,7 @@ class InventoryManager {
     getConnections() {
         return this.connections;
     }
-    async addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort, sectionType, identification) {
+    async addConnection(fromId, toId, path, cableType, fibers, fromPort, toPort, sectionType, identification, plano_id = null) {
         if (!this.projectId) {
             alert("No hay un proyecto activo. Por favor selecciona o crea un proyecto primero.");
             return null;
@@ -2147,6 +2151,12 @@ class InventoryManager {
             alert("⚠️ No se puede crear la conexión: Un administrador está realizando cambios en el panel administrativo.");
             return null;
         }
+
+        const fDetails = this.initializeFiberDetails(parseInt(fibers));
+        if (plano_id && fDetails.length > 0) {
+            fDetails[0].plano_id = plano_id;
+        }
+
         const newConnection = {
             id: Date.now().toString(),
             from: fromId,
@@ -2158,7 +2168,7 @@ class InventoryManager {
             fromPort: fromPort || null, // { equipId, portId } for RACK nodes
             toPort: toPort || null,      // { equipId, portId } for RACK nodes
             identification: identification || null,
-            fiberDetails: this.initializeFiberDetails(parseInt(fibers)), // Initialize fiber array
+            fiberDetails: fDetails, // Initialize fiber array
             project_id: this.projectId
         };
 
@@ -3373,6 +3383,12 @@ class UIManager {
             });
         }
 
+        // Inject plano_id if in plano mode
+        if (window.planoManager && window.planoManager.isActive && window.planoManager.parentNodeId) {
+            newNode.customFields = newNode.customFields || {};
+            newNode.customFields.plano_id = window.planoManager.parentNodeId;
+        }
+
         const addedNode = await this.inventoryManager.addNode(newNode);
 
         if (addedNode) {
@@ -3381,12 +3397,20 @@ class UIManager {
                 await this.inventoryManager.splitConnection(this.pendingSplitConnectionId, addedNode.id, this.tempLocation);
                 this.pendingSplitConnectionId = null;
                 // Important: refresh selectable connections on map
-                this.mapManager.refreshAllConnections(this.inventoryManager);
+                if (window.planoManager && window.planoManager.isActive) {
+                    window.planoManager._renderPlanoElementsToMap();
+                } else {
+                    this.mapManager.refreshAllConnections(this.inventoryManager);
+                }
             }
 
-            this.mapManager.addMarker(addedNode);
-            this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to show new segments
-            this.mapManager.resetNetworkStyles();
+            if (window.planoManager && window.planoManager.isActive) {
+                window.planoManager._renderPlanoElementsToMap();
+            } else {
+                this.mapManager.addMarker(addedNode);
+                this.mapManager.refreshAllMarkers(this.inventoryManager); // Refresh to show new segments
+                this.mapManager.resetNetworkStyles();
+            }
 
             this.isAddingNode = false;
             this.tempLocation = null;
@@ -3709,12 +3733,17 @@ class UIManager {
                 this.selectedSourcePort,
                 this.selectedTargetPort,
                 sectionType,
-                identification
+                identification,
+                (window.planoManager && window.planoManager.isActive) ? window.planoManager.parentNodeId : null
             );
 
             if (conn) {
-                this.mapManager.addConnection(conn);
-                this.mapManager.refreshAllMarkers(this.inventoryManager);
+                if (window.planoManager && window.planoManager.isActive) {
+                    window.planoManager._renderPlanoElementsToMap();
+                } else {
+                    this.mapManager.addConnection(conn);
+                    this.mapManager.refreshAllMarkers(this.inventoryManager);
+                }
 
                 this.closeModal('connection');
                 this.resetConnectionState(); // Use the new reset method
@@ -7246,6 +7275,37 @@ class PlanoManager {
     }
 
     // ── View switching ──────────────────────────────────────────
+    refreshPlanoList() {
+        const container = document.getElementById('planos-list-container');
+        if (!container || !window.inventoryManager) return;
+
+        const planos = window.inventoryManager.getNodes().filter(n => n.customFields && n.customFields.is_plano);
+
+        if (planos.length === 0) {
+            container.innerHTML = '<div style="padding: 10px; font-size: 12px; color: #999; text-align: center;">No hay planos en este proyecto</div>';
+            return;
+        }
+
+        container.innerHTML = '';
+        planos.forEach(plano => {
+            const btn = document.createElement('button');
+            btn.className = 'dropdown-item';
+            btn.style.cssText = 'width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-size: 12px; color: #333; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f5f5f5;';
+            btn.innerHTML = `<span style="font-size:16px;">🖼️</span> <span>${plano.name.replace('Plano: ', '')}</span>`;
+
+            // Add view button
+            btn.addEventListener('click', () => {
+                document.getElementById('planos-dropdown').classList.add('hidden');
+                this.imageFileName = plano.name;
+
+                // Show loading before image renders
+                this.enterPlanoMode(plano.customFields.plano_data_url, plano.id);
+            });
+
+            container.appendChild(btn);
+        });
+    }
+
     enterPlanoMode(dataUrl, parentNodeId = null) {
         this.isActive = true;
         this.parentNodeId = parentNodeId;
@@ -7279,17 +7339,10 @@ class PlanoManager {
                     this.isCalibrated = false;
                     this.pixelsPerUnit = null;
                 }
-
-                if (node.customFields.plano_elements) {
-                    this.planoNodes = JSON.parse(JSON.stringify(node.customFields.plano_elements.nodes || []));
-                    this.planoConnections = JSON.parse(JSON.stringify(node.customFields.plano_elements.cables || []));
-                }
             }
         } else {
             this.isCalibrated = false;
             this.pixelsPerUnit = null;
-            this.planoNodes = [];
-            this.planoConnections = [];
         }
 
         // Build/re-build the Leaflet CRS.Simple map

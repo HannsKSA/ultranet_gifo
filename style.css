@@ -1080,3 +1080,12 @@ body {
     border-radius: 50%;
     box-shadow: 0 0 4px rgba(0, 0, 0, 0.5);
 }
+
+/* Header Dropdowns */
+.dropdown-content button:hover {
+    background-color: #f1f1f1 !important;
+}
+
+.dropdown-item {
+    transition: background 0.2s;
+}

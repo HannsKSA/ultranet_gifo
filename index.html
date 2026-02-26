@@ -57,11 +57,6 @@
                             🧵 Tender Cableado
                         </button>
 
-                        <!-- Upload Image / Vector Map -->
-                        <button class="action-btn" id="btn-upload-map-image"
-                            style="margin-top: 8px; background: #2980b9;">
-                            📤 Subir Imagen / Mapa
-                        </button>
                         <!-- Hidden file input -->
                         <input type="file" id="input-map-image" accept="image/*,.svg" style="display:none;">
 
@@ -441,7 +436,26 @@
                 <div class="status-indicator">
                     <span class="status-dot online"></span> Sistema Operativo
                 </div>
-                <div class="user-profile">
+                <div class="user-profile" style="display: flex; gap: 10px; align-items: center;">
+                    <div class="dropdown" style="position: relative;">
+                        <button id="btn-planos-menu" class="btn-secondary"
+                            style="font-size: 12px; padding: 5px 10px; background-color: #2980b9; color: white;"
+                            onclick="document.getElementById('planos-dropdown').classList.toggle('hidden'); if(window.planoManager) window.planoManager.refreshPlanoList();">
+                            🖼️ Planos ▼
+                        </button>
+                        <div id="planos-dropdown" class="dropdown-content hidden"
+                            style="position: absolute; top: 100%; right: 0; background: white; box-shadow: 0 4px 8px rgba(0,0,0,0.2); border-radius: 4px; min-width: 220px; z-index: 1000; padding: 5px 0; margin-top: 5px;">
+                            <button id="btn-upload-map-image"
+                                style="width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-size: 13px; font-weight: 500; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #eee;">
+                                <span style="color:#2ecc71; font-weight:bold; font-size:16px;">+</span> Nueva Imagen /
+                                Plano
+                            </button>
+                            <div id="planos-list-container" style="max-height: 250px; overflow-y: auto;">
+                                <div style="padding: 10px; font-size: 12px; color: #999; text-align: center;">No hay
+                                    planos en este proyecto</div>
+                            </div>
+                        </div>
+                    </div>
                     <button id="btn-locate-me" class="btn-secondary" style="font-size: 12px; padding: 5px 10px;">📍 Mi
                         Ubicación</button>
                     <span style="margin-right: 10px;">Admin</span>
@@ -458,14 +472,8 @@
                     <button class="plano-exit-btn" id="btn-exit-plano">← Volver al Mapa</button>
                     <span id="plano-filename">🖼️ Sin imagen cargada</span>
                     <div class="plano-toolbar-actions">
-                        <button id="btn-plano-add-node" class="plano-tool-btn">📍 Nodo</button>
-                        <button id="btn-plano-draw-cable" class="plano-tool-btn">🧵 Cable</button>
-                        <button id="btn-plano-finish-cable" class="plano-tool-btn plano-tool-finish"
-                            style="display:none">✅ Finalizar Cable</button>
-                        <button id="btn-plano-cancel-cable" class="plano-tool-btn plano-tool-cancel"
-                            style="display:none">❌ Cancelar</button>
                         <button id="btn-plano-clear" class="plano-tool-btn" style="background:rgba(220,53,69,0.5)">🗑️
-                            Limpiar</button>
+                            Limpiar Selección</button>
                         <button id="btn-plano-upload-new" class="plano-tool-btn">📤 Cambiar Imagen</button>
                     </div>
                     <div id="plano-status" class="plano-status">Modo: Selección</div>
