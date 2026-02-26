@@ -7389,12 +7389,21 @@ class PlanoManager {
     }
 
     _renderPlanoElementsToMap() {
+        // Shared Icon configuration
+        const planoNodeIcon = L.divIcon({
+            className: 'plano-node-icon',
+            html: '<div style="background:#800020; width:14px; height:14px; border-radius:50%; border:2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>',
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+        });
+
         // Render Nodes
         this.planoNodes.forEach(node => {
-            node.marker = L.circleMarker([node.latlng.lat, node.latlng.lng], {
-                radius: 8, fillColor: '#800020', color: '#fff', weight: 2.5, fillOpacity: 0.95
+            node.marker = L.marker([node.latlng.lat, node.latlng.lng], {
+                icon: planoNodeIcon,
+                title: node.name
             }).addTo(this.planoMap);
-            node.marker.bindTooltip(node.name, { permanent: true, direction: 'top', offset: [0, -12], className: 'cable-dist-tooltip' });
+            node.marker.bindTooltip(node.name, { permanent: true, direction: 'top', offset: [0, -10], className: 'cable-dist-tooltip' });
         });
 
         // Render Cables
@@ -7472,12 +7481,20 @@ class PlanoManager {
         const name = prompt('Nombre del nodo (equipo, caja, punto):', 'Nodo ' + this.nodeIdCounter);
         if (name === null) return;
 
-        const marker = L.circleMarker([latlng.lat, latlng.lng], {
-            radius: 8, fillColor: '#800020', color: '#fff', weight: 2.5, fillOpacity: 0.95
+        const planoNodeIcon = L.divIcon({
+            className: 'plano-node-icon',
+            html: '<div style="background:#800020; width:14px; height:14px; border-radius:50%; border:2px solid white; box-shadow: 0 0 5px rgba(0,0,0,0.5);"></div>',
+            iconSize: [14, 14],
+            iconAnchor: [7, 7]
+        });
+
+        const marker = L.marker([latlng.lat, latlng.lng], {
+            icon: planoNodeIcon,
+            title: name || ('Nodo ' + this.nodeIdCounter)
         }).addTo(this.planoMap);
 
         marker.bindTooltip(name || ('Nodo ' + this.nodeIdCounter), {
-            permanent: true, direction: 'top', offset: [0, -12],
+            permanent: true, direction: 'top', offset: [0, -10],
             className: 'cable-dist-tooltip'
         });
 
@@ -7491,8 +7508,16 @@ class PlanoManager {
     _addCableWaypoint(latlng) {
         this.cableWaypoints.push(latlng);
 
-        const dot = L.circleMarker([latlng.lat, latlng.lng], {
-            radius: 4, fillColor: '#e67e22', color: '#fff', weight: 1.5, fillOpacity: 1
+        const dotIcon = L.divIcon({
+            className: 'plano-waypoint-icon',
+            html: '<div style="background:#e67e22; width:8px; height:8px; border-radius:50%; border:1px solid white;"></div>',
+            iconSize: [8, 8],
+            iconAnchor: [4, 4]
+        });
+
+        const dot = L.marker([latlng.lat, latlng.lng], {
+            icon: dotIcon,
+            interactive: false
         }).addTo(this.planoMap);
         this._cableWaypointDots.push(dot);
 
@@ -7631,11 +7656,19 @@ class PlanoManager {
     }
 
     _addCotaPoint(latlng) {
+        if (this.cotaPoints.length >= 2) return;
+
         this.cotaPoints.push(latlng);
 
-        const dot = L.circleMarker([latlng.lat, latlng.lng], {
-            radius: 6, fillColor: '#e67e22', color: '#fff', weight: 2, fillOpacity: 1
-        }).addTo(this.planoMap);
+        // Visual marker
+        const cotaIcon = L.divIcon({
+            className: 'cota-point-icon',
+            html: '<div style="background:#9b59b6; width:10px; height:10px; border-radius:50%; border:1px solid white;"></div>',
+            iconSize: [10, 10],
+            iconAnchor: [5, 5]
+        });
+
+        const dot = L.marker([latlng.lat, latlng.lng], { icon: cotaIcon, interactive: false }).addTo(this.planoMap);
         this.cotaMarkers.push(dot);
 
         if (this.cotaPoints.length > 1) {
