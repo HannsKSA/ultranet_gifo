@@ -516,7 +516,7 @@ class UserManager {
 
     updateHeader() {
         console.log("Updating header for user:", this.user.email);
-        const profileEl = document.querySelector('.user-profile span');
+        const profileEl = document.getElementById('user-profile-name');
         const statusDot = document.querySelector('.status-dot');
 
         if (statusDot) {
@@ -7215,6 +7215,10 @@ class PlanoManager {
 
     // ── Image loading & Placement ───────────────────────────────
     startPlacingPlanoMode() {
+        if (!window.inventoryManager || !window.inventoryManager.projectId) {
+            alert('Por favor selecciona o crea un proyecto activo (Panel Admin) antes de crear Capas/Planos en el mapa.');
+            return;
+        }
         if (!window.mapManager || !window.mapManager.map) return;
 
         // Visual feedback
@@ -7276,33 +7280,49 @@ class PlanoManager {
 
     // ── View switching ──────────────────────────────────────────
     refreshPlanoList() {
-        const container = document.getElementById('planos-list-container');
-        if (!container || !window.inventoryManager) return;
+        const topContainer = document.getElementById('planos-list-container');
+        const sideContainer = document.getElementById('sidebar-capas-list');
+
+        if (!window.inventoryManager) return;
 
         const planos = window.inventoryManager.getNodes().filter(n => n.customFields && n.customFields.is_plano);
 
+        if (topContainer) topContainer.innerHTML = '';
+        if (sideContainer) sideContainer.innerHTML = '';
+
         if (planos.length === 0) {
-            container.innerHTML = '<div style="padding: 10px; font-size: 12px; color: #999; text-align: center;">No hay planos en este proyecto</div>';
+            const emptyHtml = '<div style="padding: 10px; font-size: 12px; color: #999; text-align: center;">No hay planos en este proyecto</div>';
+            if (topContainer) topContainer.innerHTML = emptyHtml;
+            if (sideContainer) sideContainer.innerHTML = emptyHtml;
             return;
         }
 
-        container.innerHTML = '';
         planos.forEach(plano => {
-            const btn = document.createElement('button');
-            btn.className = 'dropdown-item';
-            btn.style.cssText = 'width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-size: 12px; color: #333; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f5f5f5;';
-            btn.innerHTML = `<span style="font-size:16px;">🖼️</span> <span>${plano.name.replace('Plano: ', '')}</span>`;
-
-            // Add view button
-            btn.addEventListener('click', () => {
-                document.getElementById('planos-dropdown').classList.add('hidden');
-                this.imageFileName = plano.name;
-
-                // Show loading before image renders
-                this.enterPlanoMode(plano.customFields.plano_data_url, plano.id);
-            });
-
-            container.appendChild(btn);
+            // For Toolbar Dropdown
+            if (topContainer) {
+                const btn = document.createElement('button');
+                btn.className = 'dropdown-item';
+                btn.style.cssText = 'width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-size: 12px; color: #333; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f5f5f5;';
+                btn.innerHTML = `<span style="font-size:16px;">🖼️</span> <span>${plano.name.replace('Plano: ', '')}</span>`;
+                btn.addEventListener('click', () => {
+                    document.getElementById('planos-dropdown')?.classList.add('hidden');
+                    this.imageFileName = plano.name;
+                    this.enterPlanoMode(plano.customFields.plano_data_url, plano.id);
+                });
+                topContainer.appendChild(btn);
+            }
+            // For Sidebar Capas
+            if (sideContainer) {
+                const btn2 = document.createElement('button');
+                btn2.className = 'action-btn';
+                btn2.style.cssText = 'background: #34495e; margin-bottom: 5px; text-align: left;';
+                btn2.innerHTML = `🏢 ${plano.name.replace('Plano: ', '')}`;
+                btn2.addEventListener('click', () => {
+                    this.imageFileName = plano.name;
+                    this.enterPlanoMode(plano.customFields.plano_data_url, plano.id);
+                });
+                sideContainer.appendChild(btn2);
+            }
         });
     }
 
@@ -7325,6 +7345,9 @@ class PlanoManager {
         // Also show "← Salir del Plano" shortcut in sidebar cota panel
         const btnRemove = document.getElementById('btn-remove-map-image');
         if (btnRemove) btnRemove.style.display = 'block';
+
+        // Hide Cota Section normally, but show it when plano active
+        document.getElementById('section-linea-cota')?.classList.remove('hidden');
 
         // Load existing elements if any
         if (this.parentNodeId && window.inventoryManager) {
@@ -7365,6 +7388,7 @@ class PlanoManager {
 
         // Hide plano view
         document.getElementById('plano-view')?.classList.add('hidden');
+        document.getElementById('section-linea-cota')?.classList.add('hidden');
 
         // Hide cota sidebar shortcut
         const btnRemove = document.getElementById('btn-remove-map-image');

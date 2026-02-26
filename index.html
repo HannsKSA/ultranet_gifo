@@ -60,8 +60,31 @@
                         <!-- Hidden file input -->
                         <input type="file" id="input-map-image" accept="image/*,.svg" style="display:none;">
 
+                        <!-- Capas (Planos) Collapsible Section -->
+                        <div id="section-capas" class="cota-section" style="margin-top: 10px;">
+                            <button class="cota-toggle-btn" id="btn-toggle-capas"
+                                onclick="document.getElementById('capas-panel').classList.toggle('open'); if(window.planoManager) window.planoManager.refreshPlanoList();">
+                                <span>🏢 Capas y Pisos</span>
+                                <span id="capas-toggle-icon">▼</span>
+                            </button>
+                            <div id="capas-panel" class="cota-panel">
+                                <div class="cota-panel-inner" style="padding-top: 10px;">
+                                    <button class="action-btn" id="btn-sidebar-add-capa"
+                                        style="background: #2980b9; margin-bottom: 10px;"
+                                        onclick="if(window.planoManager) window.planoManager.startPlacingPlanoMode()">
+                                        <span style="color:#2ecc71; font-weight:bold; font-size:16px;">+</span> Nueva
+                                        Capa / Piso (Plano)
+                                    </button>
+                                    <div id="sidebar-capas-list" style="max-height: 200px; overflow-y: auto;">
+                                        <div style="font-size: 12px; color: #999; text-align: center;">No hay capas
+                                            registradas</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
                         <!-- Línea de Cota Collapsible Section -->
-                        <div id="section-linea-cota" class="cota-section" style="margin-top: 10px;">
+                        <div id="section-linea-cota" class="cota-section hidden" style="margin-top: 10px;">
                             <button class="cota-toggle-btn" id="btn-toggle-cota"
                                 onclick="window.planoManager && window.planoManager.toggleCotaPanel()">
                                 <span>📏 Línea de Cota</span>
