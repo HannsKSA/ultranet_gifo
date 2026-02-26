@@ -230,6 +230,16 @@
                             <input type="number" class="form-input" id="node-reserve" value="0" min="0" step="0.5">
                         </div>
 
+                        <!-- Vertical Elevation (Shown in plano mode) -->
+                        <div id="vertical-fields" class="hidden"
+                            style="background:#f0f7fb; padding:10px; border-radius:5px; border-left:4px solid #3498db; margin-bottom:10px;">
+                            <label class="form-label" style="color:#2980b9;">📏 Elevación / Altura (m)</label>
+                            <input type="number" class="form-input" id="node-height" value="0" step="0.1"
+                                placeholder="Ej: 2.5 (sobre el nivel del piso)">
+                            <small style="font-size:10px; color:#7f8c8d;">Se usará para calcular la longitud real del
+                                cableado en 3D.</small>
+                        </div>
+
                         <!-- Dynamic Fields for Custom Node Types -->
                         <div id="dynamic-fields" style="margin-top: 10px;"></div>
 
@@ -284,12 +294,18 @@
                     <div class="details-body">
                         <p><strong>Coordenadas:</strong> <span id="detail-coords">--</span></p>
                         <p><strong>Reserva:</strong> <span id="detail-reserve">0.00</span> m</p>
+                        <div id="detail-elevation-row" class="hidden">
+                            <p><strong>Elevación:</strong> <span id="detail-height">0.00</span> m</p>
+                        </div>
                         <div id="detail-extra-info"></div>
 
                         <div class="details-actions">
                             <button class="action-btn" id="btn-start-connection" style="flex:2">🔗 CONECTAR</button>
-                            <button class="btn-danger" id="btn-report-damage" style="flex:2">⚠️ Reportar
-                                Daño</button>
+                            <button class="btn-danger" id="btn-report-damage" style="flex:2">⚠️ Reportar Daño</button>
+                        </div>
+                        <div id="vertical-link-action" class="details-actions hidden" style="margin-top:5px;">
+                            <button class="action-btn" id="btn-link-floor"
+                                style="background-color: #34495e; width: 100%;">🏢 Vincular con otro Piso</button>
                         </div>
                         <div class="details-actions">
                             <button class="action-btn hidden" id="btn-view-rack"
@@ -481,9 +497,12 @@
                     </div>
                     <button id="btn-locate-me" class="btn-secondary" style="font-size: 12px; padding: 5px 10px;">📍 Mi
                         Ubicación</button>
-                    <span style="margin-right: 10px;">Admin</span>
-                    <button id="btn-logout" class="btn-secondary"
-                        style="font-size: 12px; padding: 5px 10px; background-color: #666; color: white;">Salir</button>
+                    <div id="user-info-container"
+                        style="display: flex; align-items: center; gap: 8px; font-size: 11px; color: #7f8c8d; border-left: 1px solid #eee; padding-left: 10px; margin-left: 5px;">
+                        <span id="user-profile-name" style="font-weight: 500;">...</span>
+                        <button id="btn-logout" class="btn-secondary"
+                            style="font-size: 11px; padding: 4px 8px; background-color: #95a5a6; color: white; border: none; border-radius: 4px;">Salir</button>
+                    </div>
                 </div>
             </header>
 

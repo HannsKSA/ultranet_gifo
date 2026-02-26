@@ -1082,10 +1082,36 @@ body {
 }
 
 /* Header Dropdowns */
+.dropdown-content {
+    border: 1px solid #ddd;
+    overflow: hidden;
+}
+
+.dropdown-content button {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    border: none;
+    background: white;
+    padding: 12px 15px;
+    font-size: 13px;
+    color: #2c3e50;
+    cursor: pointer;
+    text-align: left;
+    transition: all 0.2s;
+}
+
 .dropdown-content button:hover {
-    background-color: #f1f1f1 !important;
+    background-color: #f8f9fa !important;
+    color: #2980b9;
 }
 
 .dropdown-item {
     transition: background 0.2s;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+.dropdown-item:last-child {
+    border-bottom: none;
 }

@@ -526,6 +526,9 @@ class UserManager {
 
         if (profileEl && this.profile) {
             profileEl.innerText = `${this.profile.role.toUpperCase()} | ${this.user.email}`;
+            profileEl.style.display = 'inline-block';
+            profileEl.style.fontSize = '12px';
+            profileEl.style.color = '#34495e';
 
             // Handle Admin Button visibility based on permissions
             const btnAdmin = document.getElementById('btn-admin-panel');
@@ -3297,6 +3300,17 @@ class UIManager {
         this.isAddingNode = true;
         this.switchView('add');
         this.resetForm();
+
+        // Show vertical elevation fields if in plano mode
+        const vFields = document.getElementById('vertical-fields');
+        if (vFields) {
+            if (window.planoManager && window.planoManager.isActive) {
+                vFields.classList.remove('hidden');
+            } else {
+                vFields.classList.add('hidden');
+            }
+        }
+
         this.form.preview.innerHTML = "<small style='color:#e74c3c; font-weight:bold;'>📍 HAZ CLIC EN EL MAPA PARA UBICAR</small>";
         this.form.preview.classList.remove('success');
         this.form.preview.style.borderColor = "#ff4d4f";
@@ -3331,8 +3345,15 @@ class UIManager {
             reserve: parseFloat(this.form.reserve.value) || 0,
             lat: parseFloat(this.form.lat.value),
             lng: parseFloat(this.form.lng.value),
-            rack: [] // Initialize empty rack
+            rack: []
         };
+
+        // Capture elevation if available
+        const heightInput = document.getElementById('node-height');
+        if (heightInput) {
+            newNode.customFields = newNode.customFields || {};
+            newNode.customFields.height = parseFloat(heightInput.value) || 0;
+        }
 
         // ONU-specific legacy support - mostly handled by dynamic fields now
         if (newNode.type === 'ONU' && this.form.clientAddress && this.form.clientPlan) {
@@ -3384,9 +3405,9 @@ class UIManager {
         }
 
         // Inject plano_id if in plano mode
-        if (window.planoManager && window.planoManager.isActive && window.planoManager.parentNodeId) {
+        if (window.planoManager && window.planoManager.isActive && window.planoManager.fullPlanoId) {
             newNode.customFields = newNode.customFields || {};
-            newNode.customFields.plano_id = window.planoManager.parentNodeId;
+            newNode.customFields.plano_id = window.planoManager.fullPlanoId;
         }
 
         const addedNode = await this.inventoryManager.addNode(newNode);
@@ -3734,7 +3755,7 @@ class UIManager {
                 this.selectedTargetPort,
                 sectionType,
                 identification,
-                (window.planoManager && window.planoManager.isActive) ? window.planoManager.parentNodeId : null
+                (window.planoManager && window.planoManager.isActive) ? window.planoManager.fullPlanoId : null
             );
 
             if (conn) {
@@ -4696,6 +4717,29 @@ class UIManager {
     }
 
     // --- Details & List ---
+    handleInterFloorLink(node) {
+        const site = window.inventoryManager.getNode(window.planoManager.parentNodeId);
+        if (!site || !site.customFields.layers) return;
+
+        const otherLayers = site.customFields.layers.filter(l => l.id !== window.planoManager.currentLayerId);
+        if (otherLayers.length === 0) {
+            alert('No hay otros pisos registrados en este sitio para vincular. Agrega una nueva capa primero.');
+            return;
+        }
+
+        let msg = "Selecciona el piso destino para vincular este nodo:\n";
+        otherLayers.forEach((l, idx) => msg += `${idx + 1}. ${l.name}\n`);
+        const choice = prompt(msg);
+        if (choice && otherLayers[parseInt(choice) - 1]) {
+            const target = otherLayers[parseInt(choice) - 1];
+            node.customFields = node.customFields || {};
+            node.customFields.link_to_plano_id = `${site.id}_${target.id}`;
+            window.inventoryManager.updateNode(node);
+            alert(`Vínculo creado exitosamente hacia ${target.name}`);
+            this.showNodeDetails(node.id);
+        }
+    }
+
     showNodeDetails(nodeId) {
         const node = this.inventoryManager.getNode(nodeId);
         if (!node) return;
@@ -4705,6 +4749,43 @@ class UIManager {
         this.details.type.textContent = node.type;
         this.details.reserve.textContent = parseFloat(node.reserve || 0).toFixed(2);
         this.details.coords.textContent = `${node.lat.toFixed(5)}, ${node.lng.toFixed(5)}`;
+
+        // Handle Elevation Display
+        const elevRow = document.getElementById('detail-elevation-row');
+        const elevSpan = document.getElementById('detail-height');
+        if (elevRow && elevSpan) {
+            if (node.customFields?.height) {
+                elevRow.classList.remove('hidden');
+                elevSpan.textContent = parseFloat(node.customFields.height).toFixed(2);
+            } else {
+                elevRow.classList.add('hidden');
+            }
+        }
+
+        // Handle Inter-floor linking button
+        const linkAction = document.getElementById('vertical-link-action');
+        if (linkAction) {
+            if (window.planoManager && window.planoManager.isActive) {
+                linkAction.classList.remove('hidden');
+                document.getElementById('btn-link-floor').onclick = () => this.handleInterFloorLink(node);
+
+                // If it's already linked, change text
+                if (node.customFields?.link_to_plano_id) {
+                    const targetParts = node.customFields.link_to_plano_id.split('_');
+                    document.getElementById('btn-link-floor').innerHTML = `🚀 Saltar a Capa Destino`;
+                    document.getElementById('btn-link-floor').onclick = () => {
+                        const site = window.inventoryManager.getNode(targetParts[0]);
+                        const layer = (site?.customFields?.layers || []).find(l => l.id === targetParts[1]);
+                        if (layer) window.planoManager.enterPlanoMode(layer.dataUrl, site.id, layer.id);
+                    };
+                } else {
+                    document.getElementById('btn-link-floor').innerHTML = `🏢 Vincular con otro Piso`;
+                }
+            } else {
+                linkAction.classList.add('hidden');
+            }
+        }
+
         this.details.type.style.backgroundColor = this.mapManager.getColorForType(node.type);
 
         // Show extra info for ONUs or Custom Types
@@ -7225,11 +7306,28 @@ class PlanoManager {
         const mapEl = window.mapManager.map.getContainer();
         mapEl.style.cursor = 'crosshair';
 
-        // Disable existing clicking handlers if needed, though usually standard map is ok
+        // Disable existing clicking handlers
         this._mapPlanoClickHandler = (e) => {
             mapEl.style.cursor = '';
             window.mapManager.map.off('click', this._mapPlanoClickHandler);
+
+            // Check for nearby site to add layer
+            const nearby = window.inventoryManager.getNodes().find(n =>
+                n.customFields?.is_plano &&
+                window.mapManager.map.distance(e.latlng, [n.lat, n.lng]) < 10
+            );
+
             this._pendingPlanoCoords = e.latlng;
+            this._pendingParentNodeId = nearby ? nearby.id : null;
+
+            if (nearby) {
+                if (confirm(`¿Deseas agregar una nueva CAPA/PISO al sitio existente "${nearby.name}"?`)) {
+                    // Stay with this parent
+                } else {
+                    this._pendingParentNodeId = null; // Create new site
+                }
+            }
+
             // Now invoke the file picker
             document.getElementById('input-map-image').click();
         };
@@ -7243,35 +7341,68 @@ class PlanoManager {
         const reader = new FileReader();
         reader.onload = (e) => {
             const dataUrl = e.target.result;
-            this.imageDataUrl = dataUrl;
             const img = new Image();
             img.onload = async () => {
                 this.imageSize = { w: img.naturalWidth, h: img.naturalHeight };
 
-                let parentId = null;
-                if (coords) {
-                    // Create a geographic node to anchor this plan
-                    const nodeName = 'Plano: ' + file.name.split('.')[0];
-                    const node = {
-                        id: 'plano-' + Date.now(),
-                        name: nodeName,
-                        type: 'RACK', // Use RACK so it draws a visible square icon
+                let parentId = this._pendingParentNodeId;
+                let layerId = 'layer-' + Date.now();
+                let layerName = prompt('Nombre de la Capa o Piso:', parentId ? 'Nuevo Piso' : 'Planta Baja');
+                if (!layerName) layerName = file.name.split('.')[0];
+
+                if (!parentId && coords) {
+                    // Create a new geographic site node
+                    const siteName = 'Sitio: ' + (layerName || file.name.split('.')[0]);
+                    const siteNode = {
+                        id: 'plano-site-' + Date.now(),
+                        name: siteName,
+                        type: 'RACK',
                         lat: coords.lat,
                         lng: coords.lng,
                         customFields: {
                             is_plano: true,
-                            plano_data_url: dataUrl,
-                            plano_elements: { nodes: [], cables: [] },
-                            cota: null
+                            layers: []
                         }
                     };
-                    await window.inventoryManager.addNode(node);
-                    window.mapManager.addMarker(node);
-                    parentId = node.id;
-                    console.log('📍 Geographic anchor node created for Plano:', parentId);
+                    parentId = siteNode.id;
+                    siteNode.customFields.layers.push({
+                        id: layerId,
+                        name: layerName,
+                        dataUrl: dataUrl,
+                        cota: null,
+                        imageSize: this.imageSize
+                    });
+                    await window.inventoryManager.addNode(siteNode);
+                    window.mapManager.addMarker(siteNode);
+                } else if (parentId) {
+                    // Add layer to existing site
+                    const site = window.inventoryManager.getNode(parentId);
+                    if (site) {
+                        if (!site.customFields.layers) site.customFields.layers = [];
+
+                        // Compatibility fix for old single-image planos
+                        if (site.customFields.plano_data_url && site.customFields.layers.length === 0) {
+                            site.customFields.layers.push({
+                                id: 'layer-legacy',
+                                name: 'Piso Original',
+                                dataUrl: site.customFields.plano_data_url,
+                                cota: site.customFields.cota || null
+                            });
+                        }
+
+                        site.customFields.layers.push({
+                            id: layerId,
+                            name: layerName,
+                            dataUrl: dataUrl,
+                            cota: null,
+                            imageSize: this.imageSize
+                        });
+                        await window.inventoryManager.updateNode(site);
+                    }
                 }
 
-                this.enterPlanoMode(dataUrl, parentId || this.parentNodeId);
+                this._pendingParentNodeId = null;
+                this.enterPlanoMode(dataUrl, parentId, layerId);
             };
             img.src = dataUrl;
         };
@@ -7298,37 +7429,60 @@ class PlanoManager {
         }
 
         planos.forEach(plano => {
-            // For Toolbar Dropdown
-            if (topContainer) {
-                const btn = document.createElement('button');
-                btn.className = 'dropdown-item';
-                btn.style.cssText = 'width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-size: 12px; color: #333; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f5f5f5;';
-                btn.innerHTML = `<span style="font-size:16px;">🖼️</span> <span>${plano.name.replace('Plano: ', '')}</span>`;
-                btn.addEventListener('click', () => {
-                    document.getElementById('planos-dropdown')?.classList.add('hidden');
-                    this.imageFileName = plano.name;
-                    this.enterPlanoMode(plano.customFields.plano_data_url, plano.id);
-                });
-                topContainer.appendChild(btn);
-            }
-            // For Sidebar Capas
-            if (sideContainer) {
-                const btn2 = document.createElement('button');
-                btn2.className = 'action-btn';
-                btn2.style.cssText = 'background: #34495e; margin-bottom: 5px; text-align: left;';
-                btn2.innerHTML = `🏢 ${plano.name.replace('Plano: ', '')}`;
-                btn2.addEventListener('click', () => {
-                    this.imageFileName = plano.name;
-                    this.enterPlanoMode(plano.customFields.plano_data_url, plano.id);
-                });
-                sideContainer.appendChild(btn2);
+            const layers = plano.customFields.layers || [];
+            const siteName = plano.name.replace('Sitio: ', '').replace('Plano: ', '');
+
+            // For each layer...
+            layers.forEach(layer => {
+                const combinedName = `${siteName} - ${layer.name}`;
+                const fullPlanoId = `${plano.id}_${layer.id}`;
+
+                // Toolbar Dropdown
+                if (topContainer) {
+                    const btn = document.createElement('button');
+                    btn.className = 'dropdown-item';
+                    btn.style.cssText = 'width: 100%; text-align: left; padding: 10px; background: none; border: none; cursor: pointer; font-size: 12px; color: #333; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid #f5f5f5;';
+                    btn.innerHTML = `<span style="font-size:16px;">🏢</span> <span>${combinedName}</span>`;
+                    btn.addEventListener('click', () => {
+                        document.getElementById('planos-dropdown')?.classList.add('hidden');
+                        this.imageFileName = combinedName;
+                        this.enterPlanoMode(layer.dataUrl, plano.id, layer.id);
+                    });
+                    topContainer.appendChild(btn);
+                }
+
+                // Sidebar list
+                if (sideContainer) {
+                    const btn2 = document.createElement('button');
+                    btn2.className = 'action-btn';
+                    btn2.style.cssText = 'background: #34495e; margin-bottom: 5px; text-align: left; font-size: 11px; padding: 8px;';
+                    btn2.innerHTML = `🏢 ${combinedName}`;
+                    btn2.addEventListener('click', () => {
+                        this.imageFileName = combinedName;
+                        this.enterPlanoMode(layer.dataUrl, plano.id, layer.id);
+                    });
+                    sideContainer.appendChild(btn2);
+                }
+            });
+
+            // Handle legacy planos (without layers array)
+            if (layers.length === 0 && plano.customFields.plano_data_url) {
+                // ... logic to show legacy ...
+                const btnLegacy = document.createElement('button');
+                btnLegacy.className = 'action-btn';
+                btnLegacy.style.background = '#7f8c8d';
+                btnLegacy.innerText = `📦 ${siteName} (Legacy)`;
+                btnLegacy.onclick = () => this.enterPlanoMode(plano.customFields.plano_data_url, plano.id, 'legacy');
+                if (sideContainer) sideContainer.appendChild(btnLegacy);
             }
         });
     }
 
-    enterPlanoMode(dataUrl, parentNodeId = null) {
+    enterPlanoMode(dataUrl, parentNodeId = null, layerId = 'default') {
         this.isActive = true;
         this.parentNodeId = parentNodeId;
+        this.currentLayerId = layerId;
+        this.fullPlanoId = `${parentNodeId}_${layerId}`;
 
         // Hide the geographic map and other views
         ['map', 'full-inventory-view', 'full-reports-view'].forEach(id => {
@@ -7353,14 +7507,22 @@ class PlanoManager {
         if (this.parentNodeId && window.inventoryManager) {
             const node = window.inventoryManager.getNode(this.parentNodeId);
             if (node && node.customFields) {
-                if (node.customFields.cota) {
+                // Find layer config for cota
+                const layer = (node.customFields.layers || []).find(l => l.id === this.currentLayerId);
+                const cotaSource = layer ? layer.cota : (node.customFields.cota || null);
+
+                if (cotaSource) {
                     this.isCalibrated = true;
-                    this.unit = node.customFields.cota.unit;
-                    this.pixelsPerUnit = node.customFields.cota.pixelsPerUnit;
-                    this.cotaRealValue = node.customFields.cota.realValue;
+                    this.unit = cotaSource.unit;
+                    this.pixelsPerUnit = cotaSource.pixelsPerUnit;
+                    this.cotaRealValue = cotaSource.realValue;
                 } else {
                     this.isCalibrated = false;
                     this.pixelsPerUnit = null;
+                }
+
+                if (layer && layer.imageSize) {
+                    this.imageSize = layer.imageSize;
                 }
             }
         } else {
@@ -7466,6 +7628,18 @@ class PlanoManager {
     }
 
     _renderPlanoElementsToMap() {
+        if (!window.inventoryManager || !this.fullPlanoId || !this.planoMap) return;
+
+        // Clear old layer group
+        if (this._planoLayerGroup) {
+            this.planoMap.removeLayer(this._planoLayerGroup);
+        }
+        this._planoLayerGroup = L.layerGroup().addTo(this.planoMap);
+
+        // Fetch nodes and cables belonging to this specific site and layer
+        const siteNodes = window.inventoryManager.getNodes().filter(n => n.customFields?.plano_id === this.fullPlanoId);
+        const siteCables = window.inventoryManager.getConnections().filter(c => c.fiberDetails && c.fiberDetails[0]?.plano_id === this.fullPlanoId);
+
         // Shared Icon configuration
         const planoNodeIcon = L.divIcon({
             className: 'plano-node-icon',
@@ -7475,25 +7649,65 @@ class PlanoManager {
         });
 
         // Render Nodes
-        this.planoNodes.forEach(node => {
-            node.marker = L.marker([node.latlng.lat, node.latlng.lng], {
+        siteNodes.forEach(node => {
+            const marker = L.marker([node.lat, node.lng], {
                 icon: planoNodeIcon,
                 title: node.name
-            }).addTo(this.planoMap);
-            node.marker.bindTooltip(node.name, { permanent: true, direction: 'top', offset: [0, -10], className: 'cable-dist-tooltip' });
+            }).addTo(this._planoLayerGroup);
+
+            let label = node.name;
+            if (node.customFields?.height) label += ` [H: ${node.customFields.height}m]`;
+
+            marker.bindTooltip(label, { permanent: true, direction: 'top', offset: [0, -10], className: 'cable-dist-tooltip' });
+
+            marker.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                document.dispatchEvent(new CustomEvent('marker:clicked', { detail: node.id }));
+            });
         });
 
         // Render Cables
-        this.planoConnections.forEach(conn => {
-            conn.polyline = L.polyline(conn.points, { color: '#e67e22', weight: 3, opacity: 0.9 }).addTo(this.planoMap);
-            if (conn.distance != null) {
-                const midPt = conn.points[Math.floor(conn.points.length / 2)];
+        siteCables.forEach(conn => {
+            const polyline = L.polyline(conn.path, { color: '#e67e22', weight: 4, opacity: 0.9 }).addTo(this._planoLayerGroup);
+
+            if (this.isCalibrated && this.pixelsPerUnit) {
+                const pxDist = this.calculatePolylineDistance(conn.path);
+                const realDist = pxDist / this.pixelsPerUnit;
+
+                // Add verticality if any node in the path has height
+                let totalDist = realDist;
+                const startNode = window.inventoryManager.getNode(conn.from);
+                const endNode = window.inventoryManager.getNode(conn.to);
+
+                if (startNode?.customFields?.height || endNode?.customFields?.height) {
+                    const h1 = parseFloat(startNode?.customFields?.height || 0);
+                    const h2 = parseFloat(endNode?.customFields?.height || 0);
+                    const hDiff = Math.abs(h1 - h2);
+                    totalDist = Math.sqrt(realDist * realDist + hDiff * hDiff);
+                }
+
+                const midPt = conn.path[Math.floor(conn.path.length / 2)];
                 L.tooltip({ permanent: true, direction: 'center', className: 'cable-dist-tooltip' })
                     .setLatLng(midPt)
-                    .setContent(`${conn.name}: ${conn.distance.toFixed(2)} ${conn.unit}`)
-                    .addTo(this.planoMap);
+                    .setContent(`${conn.cableType}: ${totalDist.toFixed(2)} ${this.unit}`)
+                    .addTo(this._planoLayerGroup);
             }
+
+            polyline.on('click', (e) => {
+                L.DomEvent.stopPropagation(e);
+                document.dispatchEvent(new CustomEvent('connection:clicked', { detail: { id: conn.id, latlng: e.latlng } }));
+            });
         });
+    }
+
+    calculatePolylineDistance(pts) {
+        let dist = 0;
+        for (let i = 0; i < pts.length - 1; i++) {
+            const dx = pts[i + 1][1] - pts[i][1];
+            const dy = pts[i + 1][0] - pts[i][0];
+            dist += Math.sqrt(dx * dx + dy * dy);
+        }
+        return dist;
     }
 
     async _savePlanoStateToParentNode() {
