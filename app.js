@@ -6568,28 +6568,19 @@ class UIManager {
 
         if (btnMap) {
             btnMap.addEventListener('click', () => {
-                console.log("Map button clicked");
                 this.showMapView();
-                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
-                btnMap.classList.add('active');
             });
         }
 
         if (btnInventory) {
             btnInventory.addEventListener('click', () => {
-                console.log("Inventory button clicked");
                 this.showMainInventoryView();
-                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
-                btnInventory.classList.add('active');
             });
         }
 
         if (btnReports) {
             btnReports.addEventListener('click', () => {
-                console.log("Reports button clicked");
                 this.showMainReportsView();
-                document.querySelectorAll('.nav-btn').forEach(btn => btn.classList.remove('active'));
-                btnReports.classList.add('active');
             });
         }
 
@@ -6811,6 +6802,9 @@ class UIManager {
         if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.remove('hidden');
 
+        // Update nav buttons
+        this._updateNavActive('btn-reports');
+
         // Switch sidebar to message
         this.switchView('reportsMessage');
 
@@ -6827,8 +6821,19 @@ class UIManager {
         if (this.mapContainer) this.mapContainer.classList.remove('hidden');
         if (this.fullInventoryView) this.fullInventoryView.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
+
+        // Update nav buttons
+        this._updateNavActive('btn-map');
+
         // Restore standard behavior: 'Map' button always brings back the list sidebar
         this.switchView('list');
+    }
+
+    _updateNavActive(activeId) {
+        document.querySelectorAll('.nav-btn').forEach(btn => {
+            if (btn.id === activeId) btn.classList.add('active');
+            else if (btn.id !== 'btn-admin-panel') btn.classList.remove('active');
+        });
     }
 
     renderMainReports() {
@@ -6927,6 +6932,9 @@ class UIManager {
         if (this.mapContainer) this.mapContainer.classList.add('hidden');
         if (this.fullReportsView) this.fullReportsView.classList.add('hidden');
         if (this.fullInventoryView) this.fullInventoryView.classList.remove('hidden');
+
+        // Update nav buttons
+        this._updateNavActive('btn-inventory');
 
         // Switch sidebar to message
         this.switchView('inventoryMessage');
@@ -7500,7 +7508,8 @@ class PlanoManager {
         const btnRemove = document.getElementById('btn-remove-map-image');
         if (btnRemove) btnRemove.style.display = 'block';
 
-        // Hide Cota Section normally, but show it when plano active
+        // Hide common sections, show plano-specific ones
+        document.getElementById('section-capas')?.classList.remove('hidden');
         document.getElementById('section-linea-cota')?.classList.remove('hidden');
 
         // Load existing elements if any
@@ -7550,6 +7559,7 @@ class PlanoManager {
 
         // Hide plano view
         document.getElementById('plano-view')?.classList.add('hidden');
+        document.getElementById('section-capas')?.classList.add('hidden');
         document.getElementById('section-linea-cota')?.classList.add('hidden');
 
         // Hide cota sidebar shortcut
