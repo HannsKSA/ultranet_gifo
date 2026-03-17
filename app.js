@@ -2158,7 +2158,8 @@ class InventoryManager {
 
         const fDetails = this.initializeFiberDetails(parseInt(fibers));
         if (plano_id && fDetails.length > 0) {
-            fDetails[0].plano_id = plano_id;
+            // Assign plano_id to all fibers of this cable
+            fDetails.forEach(f => f.plano_id = plano_id);
         }
 
         const newConnection = {
@@ -2997,7 +2998,12 @@ class UIManager {
             if (this.isConnecting && this.connectionWaypoints.length > 0) {
                 // Visualize line to cursor
                 const points = [...this.connectionWaypoints, [e.detail.lat, e.detail.lng]];
-                this.mapManager.updateTempPolyline(points);
+
+                if (window.planoManager && window.planoManager.isActive) {
+                    window.planoManager.updateTempPolyline(points);
+                } else {
+                    this.mapManager.updateTempPolyline(points);
+                }
             }
         });
 
@@ -6559,7 +6565,7 @@ class UIManager {
 
         // Context filtering
         if (window.planoManager && window.planoManager.isActive) {
-            connections = connections.filter(c => c.fiberDetails && c.fiberDetails[0]?.plano_id === window.planoManager.fullPlanoId);
+            connections = connections.filter(c => c.fiberDetails && c.fiberDetails.some(f => f.plano_id === window.planoManager.fullPlanoId));
         }
 
         if (connections.length === 0) {
@@ -6982,8 +6988,20 @@ class UIManager {
     }
 
     renderInventorySummary() {
-        const nodes = this.inventoryManager.getNodes();
-        const connections = this.inventoryManager.getConnections();
+        let nodes = this.inventoryManager.getNodes();
+        let connections = this.inventoryManager.getConnections();
+
+        // Apply Search Filter if active
+        if (this.inventorySearchQuery) {
+            nodes = nodes.filter(n =>
+                n.name.toLowerCase().includes(this.inventorySearchQuery) ||
+                n.type.toLowerCase().includes(this.inventorySearchQuery)
+            );
+            connections = connections.filter(c =>
+                (c.cableType || '').toLowerCase().includes(this.inventorySearchQuery) ||
+                (c.identification || '').toLowerCase().includes(this.inventorySearchQuery)
+            );
+        }
 
         // 1. Group Nodes by Type
         const nodeGroups = {};
@@ -7154,7 +7172,12 @@ class UIManager {
         container.appendChild(backBtn);
 
         if (this.currentInventoryType === 'node') {
-            const nodes = this.inventoryManager.getNodes().filter(n => n.type === this.currentInventoryCategory);
+            let nodes = this.inventoryManager.getNodes().filter(n => n.type === this.currentInventoryCategory);
+
+            if (this.inventorySearchQuery) {
+                nodes = nodes.filter(n => n.name.toLowerCase().includes(this.inventorySearchQuery));
+            }
+
             nodes.forEach(node => {
                 const card = this.createItemCard(node.name, node.type, this.mapManager.getColorForType(node.type), () => {
                     this.navigateToNodeFromInventory(node.id);
@@ -7162,7 +7185,12 @@ class UIManager {
                 container.appendChild(card);
             });
         } else {
-            const conns = this.inventoryManager.getConnections().filter(c => (c.cableType || 'OTRO') === this.currentInventoryCategory);
+            let conns = this.inventoryManager.getConnections().filter(c => (c.cableType || 'OTRO') === this.currentInventoryCategory);
+
+            if (this.inventorySearchQuery) {
+                conns = conns.filter(c => (c.identification || '').toLowerCase().includes(this.inventorySearchQuery));
+            }
+
             conns.forEach(conn => {
                 const fromNode = this.inventoryManager.getNode(conn.from);
                 const toNode = this.inventoryManager.getNode(conn.to);
@@ -7713,7 +7741,7 @@ class PlanoManager {
 
         // Fetch nodes and cables belonging to this specific site and layer
         const siteNodes = window.inventoryManager.getNodes().filter(n => n.customFields?.plano_id === this.fullPlanoId);
-        const siteCables = window.inventoryManager.getConnections().filter(c => c.fiberDetails && c.fiberDetails[0]?.plano_id === this.fullPlanoId);
+        const siteCables = window.inventoryManager.getConnections().filter(c => c.fiberDetails && c.fiberDetails.some(f => f.plano_id === this.fullPlanoId));
 
         // Shared Icon configuration
         const planoNodeIcon = L.divIcon({
