@@ -3486,12 +3486,24 @@ class UIManager {
             return;
         }
 
+        // If a previous connection was in progress, clean it up first
+        if (this.isConnecting) {
+            this.mapManager.clearTempPolyline();
+            if (window.planoManager && window.planoManager.isActive) {
+                window.planoManager.clearTempPolyline();
+            }
+            this.removeStandaloneClosureUI();
+        }
+
         this.isConnecting = true;
         this.connectionSourceId = null;
         this.connectionWaypoints = [];
         this.selectedSourcePort = null;
         this.selectedTargetPort = null;
         this.mapManager.clearTempPolyline();
+        if (window.planoManager && window.planoManager.isActive) {
+            window.planoManager.clearTempPolyline();
+        }
 
         const btn = document.getElementById('btn-tender-cable');
         this._originalBtnText.tenderCable = btn.textContent;
@@ -3500,7 +3512,13 @@ class UIManager {
 
         this.addStandaloneClosureUI();
 
-        alert("Tendido Libre Activo:\n1. Haz clic en el mapa para iniciar y agregar puntos.\n2. Usa 'Finalizar Aquí' para terminar.");
+        // Non-blocking instruction banner
+        const statusEl = document.getElementById('map-status-msg');
+        if (statusEl) {
+            statusEl.textContent = '🧵 Cableado libre: clic para agregar puntos — usa "Finalizar Cable Aquí" para terminar — Esc para cancelar.';
+            statusEl.style.display = 'block';
+            setTimeout(() => { statusEl.style.display = 'none'; }, 7000);
+        }
     }
 
     async startConnectionFlow() {
@@ -3743,7 +3761,8 @@ class UIManager {
         }
 
         const sourceNode = this.connectionSourceId ? this.inventoryManager.getNode(this.connectionSourceId) : null;
-        const targetNode = this.pendingConnectionTarget;
+        // pendingConnectionTarget stores a node ID string — resolve it to the full node object
+        const targetNode = this.pendingConnectionTarget ? this.inventoryManager.getNode(this.pendingConnectionTarget) : null;
 
         const identification = this.modalForms.connIdentification.value.trim();
         const cableType = this.modalForms.connCableType.value;
@@ -3794,8 +3813,17 @@ class UIManager {
 
     cancelConnectionFlow() {
         this.mapManager.clearTempPolyline();
+        if (window.planoManager && window.planoManager.isActive) {
+            window.planoManager.clearTempPolyline();
+        }
         this.resetConnectionState();
-        alert("Conexión cancelada.");
+        // Show non-blocking feedback
+        const statusEl = document.getElementById('map-status-msg');
+        if (statusEl) {
+            statusEl.textContent = '❌ Conexión cancelada.';
+            statusEl.style.display = 'block';
+            setTimeout(() => { statusEl.style.display = 'none'; }, 2500);
+        }
     }
 
     resetConnectionState() {
@@ -3806,6 +3834,10 @@ class UIManager {
         this.selectedSourcePort = null;
         this.selectedTargetPort = null;
         this.mapManager.clearTempPolyline();
+        // Also clear temp polyline on plano map if active
+        if (window.planoManager && window.planoManager.isActive) {
+            window.planoManager.clearTempPolyline();
+        }
         this.removeStandaloneClosureUI();
 
         const btnNode = this.details.btnConnect;
@@ -7372,48 +7404,40 @@ class PlanoManager {
         // Close dropdown if open
         document.getElementById('planos-dropdown')?.classList.add('hidden');
 
-        // Visual feedback
-        const mapEl = window.mapManager.map.getContainer();
-        mapEl.style.cursor = 'crosshair';
-
         // Show the geographic map if it's hidden (e.g. plano mode was active)
         document.getElementById('map')?.classList.remove('hidden');
         document.getElementById('plano-view')?.classList.add('hidden');
 
-        this._mapPlanoClickHandler = (e) => {
-            mapEl.style.cursor = '';
-            window.mapManager.map.off('click', this._mapPlanoClickHandler);
+        // Use the current map center as location — no click required.
+        // This avoids event-ordering issues where the map click is consumed
+        // by the UIManager before the plano handler sees it.
+        const center = window.mapManager.map.getCenter();
+        this._pendingPlanoCoords = center;
+        this._pendingParentNodeId = null;
 
-            // Check for nearby site to add layer
-            const nearby = window.inventoryManager.getNodes().find(n =>
-                n.customFields?.is_plano &&
-                window.mapManager.map.distance(e.latlng, [n.lat, n.lng]) < 10
-            );
+        // Check if there's a nearby plano site at the map center
+        const nearby = window.inventoryManager.getNodes().find(n =>
+            n.customFields?.is_plano &&
+            window.mapManager.map.distance(center, [n.lat, n.lng]) < 200
+        );
 
-            this._pendingPlanoCoords = e.latlng;
-            this._pendingParentNodeId = nearby ? nearby.id : null;
-
-            if (nearby) {
-                if (confirm(`¿Deseas agregar una nueva CAPA/PISO al sitio existente "${nearby.name}"?`)) {
-                    // Stay with this parent
-                } else {
-                    this._pendingParentNodeId = null; // Create new site
-                }
+        if (nearby) {
+            if (confirm(`¿Deseas agregar una nueva CAPA/PISO al sitio existente "${nearby.name}"?`)) {
+                this._pendingParentNodeId = nearby.id;
             }
+            // else: create a new site at center
+        }
 
-            // Now invoke the file picker
-            document.getElementById('input-map-image').click();
-        };
+        // Open file picker directly
+        const fileInput = document.getElementById('input-map-image');
+        if (fileInput) fileInput.click();
 
-        window.mapManager.map.on('click', this._mapPlanoClickHandler);
-        // Use a non-blocking notification instead of alert
+        // Non-blocking hint
         const statusEl = document.getElementById('map-status-msg');
         if (statusEl) {
-            statusEl.textContent = '📍 Haz clic en el mapa para ubicar el plano';
+            statusEl.textContent = '📂 Selecciona una imagen para el plano...';
             statusEl.style.display = 'block';
-            setTimeout(() => { statusEl.style.display = 'none'; }, 8000);
-        } else {
-            alert('Haz clic en el mapa geográfico en el punto exacto donde deseas ubicar este plano.');
+            setTimeout(() => { statusEl.style.display = 'none'; }, 5000);
         }
     }
 
